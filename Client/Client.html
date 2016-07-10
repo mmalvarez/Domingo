@@ -1,0 +1,22 @@
+<html>
+  <head>
+    <script src="Domingo.js"></script>
+  </head>
+  <body>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      var socket = io("http://lenster.ucsd.edu:3000");
+      var app = Elm.Main.fullscreen();
+
+      // ports send and receive strings representing the command
+      // i think in this architecture client must always initiate communication
+      app.ports.toServer.subscribe(function(str){
+        socket.emit('toServer', str);
+      });
+
+      socket.on('fromServer', function(msg){
+        app.ports.fromServer.send(msg);
+      });
+    </script>
+  </body>
+</html>

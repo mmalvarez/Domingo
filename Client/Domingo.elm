@@ -7,155 +7,11 @@ import List
 import Random
 import Task exposing (succeed)
 
-type alias PlayerId = Int
-
-type alias CardId = Int
-
-type alias PlayerState =
-  { deck : List CardId
-  , discard : List CardId
-  , hand : List CardId
-  , victory : Int {- Extra VP earned from e.g. actions -}
-  , valid : Bool
-}
-
-{- whose turn is it? is the game over? -}
-{- TODO: eventually should have a pregame phase -}
-{- use continuations to have "response" phases -}
-type GamePhase = PreGamePhase
-               | DealPhase
-               | ActionPhase
-               | CoinPhase
-               | BuyPhase
-               | EndGamePhase {- game is over -}
-
-type alias GameState =
-  { players : Dict.Dict PlayerId PlayerState
-  , playerOrder : List PlayerId
-  , shop : Dict.Dict CardId Int
-  , trash : List CardId
-  {- how many actions, coin, buys the current player has -}
-  , actions : Int
-  , coin : Int
-  , buys : Int
-  , purchases : List CardId {- cards purchased that will enter player's discard at end of turn -}
-  , plays : List CardId {- cards played this turn that will enter player's discard at end of turn -}
-  , phase : GamePhase
-  , rng : Int
-  {- used at end of game to display how well people did in number of victory points -}
-  , winners : List (PlayerId, Int)
-}
-
-type Msg = IncrementCoin | DecrementCoin
-          {- for debugging -}
-          | ShowState
-          {- userful ones -}
-          | StartGame
-          | RestartGame
-          | PlayCard Int
-          | EndPhase
-          | BuyCard CardId
-          | EndBuy
-          {- message sent when new random seed is generated -}
-          | InitRandom Int
-          {- if a task fails - should be a no op -}
-          | TaskFail String
-          {- update the game state -}
-          | UpdateState GameState
-
-type alias Card =
-  { idn : CardId
-  , name : String
-  , img : Maybe String
-  , text : Maybe String
-  , kind : String {- TODO maybe make this semantic. is it action, victory, etc -}
-  , victory : Int {- how much victory is this worth at end of game? -}
-  , spentValue : Int {- how much is it worth if played as money? -}
-  , cost : Int {- how much does it cost to buy from the shop? -}
-  , playedEffect : Maybe (GameState -> (GameState, Cmd Msg)) {- what happens when you play it as an action -}
-  {- to do: some way of specifying reactions when it's in your hand -}
-  {- to do: some way of specifying reactions when it's on the field -}
-}
-
-{- ** Card Definitions ** -}
-
-{- no-op action, for cards that don't have any effect -}
-playerStateId : PlayerState -> PlayerState
-playerStateId ps = ps
-
-gameStateId : GameState -> GameState
-gameStateId gs = gs
-
-{- we build other cards from this one -}
-urId = -1
-
-urCard : Card
-urCard =
-  { idn = urId, name = "Ur-Card", img = Nothing, text = Nothing
-  , kind = "", victory = 0, spentValue = 0, cost = Random.maxInt
-  , playedEffect = Nothing }
-
-{- TODO, perhaps have a hierarchy of these for each type of card -}
-
-copperId = 0
-
-copperCard : Card
-copperCard =
-  { urCard | idn = copperId
-           , name = "Copper"
-           , text = Just "Worth 3 Coin"
-           , kind = "Money"
-           , spentValue = 1
-           , cost = 0
-  }
-
-estateId = 1000
-
-estateCard : Card
-estateCard =
-  { urCard | idn = estateId
-           , name = "Estate"
-           , text = Just "Worth 1 Victory"
-           , kind = "Victory"
-           , cost = 2
-           , victory = 1
-  }
-
-woodcutterId = 2000
-
-woodcutterCard =
-  { urCard | idn = woodcutterId
-           , name = "Woodcutter"
-           , text = Just "2 coin and 1 buy"
-           , kind = "Action"
-           , cost = 3
-           , playedEffect = Just (\st -> ({st | buys = st.buys + 1
-                                             , coin = st.coin + 2}, Cmd.none))
-  }
-
-villageId = 2001
-
-villageCard =
-  { urCard | idn = villageId
-           , name = "Village"
-           , text = Just "1 card and 2 actions"
-           , kind = "Action"
-           , cost = 3
-           , playedEffect = Just (\st -> let st' = {st | actions = st.actions + 2} in
-                                            (st',
-                                             doGameTask (dealCurrentPlayerCards 1 st')))
-  }
-
-{- global dictionary used to look up cards by ID -}
-
-allCards : Dict.Dict CardId Card
-allCards = Dict.fromList
-            [ (urId, urCard)
-            , (copperId, copperCard)
-            , (estateId, estateCard)
-            , (woodcutterId, woodcutterCard)
-            , (villageId, villageCard)
-            ]
+{- import the rest of Domingo -}
+import DomingoModel exposing (..)
+import DomingoPorts exposing(..)
+import DomingoActions exposing(..)
+import DomingoCards exposing(..)
 
 {- state of a player at the beginning -}
 startingDeck : List CardId
@@ -170,48 +26,6 @@ startingPlayerState =
   }
 
 handSize = 5
-
-{- how to shuffle a deck. -}
-{- Pick a single card from a deck. Should not be given [] -}
-{- TODO see if this and shuffle can be made polymorphic -}
-pickFromList : List CardId -> Random.Seed -> (List CardId, CardId, Random.Seed)
-pickFromList l s =
-  let
-    (n, newSeed) = Random.step (Random.int 1 (List.length l)) s
-
-    newList = List.take (n - 1) l ++ List.drop n l
-
-    newCard = List.head (List.drop (n - 1) l)
-  in
-  case newCard of
-    Nothing ->
-      (newList, urId, newSeed) {- should be dead code -}
-
-    Just nc ->
-      (newList, nc, newSeed)
-
-{- shuffles the list -}
-shuffle' : List CardId -> Random.Seed -> (List CardId, Random.Seed)
-shuffle' l s =
-  case l of
-      [] -> ([], s)
-      _ ->
-        let
-          (l', c, s') = pickFromList l s
-
-          (l'', s'') = shuffle' l' s'
-        in
-        (c :: l'', s'')
-
-{- get back our RNG seed from the seed value -}
-intOfSeed : Random.Seed -> Int
-intOfSeed s =
-  fst <| Random.step (Random.int Random.minInt Random.maxInt) s
-
-{- nicer wrapper -}
-shuffle : List CardId -> Int -> List CardId
-shuffle l iSeed =
-  fst <| shuffle' l (Random.initialSeed iSeed)
 
 {- initial numbers for cards -}
 estateHowMany : Int
@@ -239,6 +53,7 @@ startingState =
   , phase = PreGamePhase
   , rng = 0 {- this is a dead value; gets clobbered by real randomness -}
   , winners = []
+  , message = "nothing yet"
   }
 
 main =
@@ -304,7 +119,8 @@ view state =
     currPlayer = dflGet currPid state.players dummy
   in
   div []
-    [ div [] (if not (state.phase == EndGamePhase)
+    [ text ("Most recent server message: " ++ state.message), br [] []
+    , div [] (if not (state.phase == EndGamePhase)
               then
                  [text ("You are player " ++ toString currPid ++ ". Your hand:")
                  , br [] []
@@ -335,157 +151,16 @@ view state =
     , br [] []
     , button [ onClick RestartGame ]  [ text "restart game" ]
     , br [] [], br [] []
+    , Html.form [Html.Attributes.id "connectForm"]
+         [Html.input [ Html.Attributes.id "connectInput"
+         , Html.Attributes.type' "submit"
+         , Html.Attributes.value "Submit"
+         ] []]
+    , br [] []
     , button [ onClick ShowState ] [ text "show game state in console" ]
     , br [] [], br [] [], br [] []
     , text "Created By Ronald X Hackerino"
     ]
-
-{- variant of head that works with default values -}
-dflHead : List a -> a -> a
-dflHead l d = case l of
-              h :: t -> h
-
-              _ -> d
-
-{- variant of tail that swallows errors -}
-dflTail : List a -> List a
-dflTail l =
-  case l of
-    [] -> []
-    h :: t -> t
-
-{- dummy player for use with the next function -}
-dummyId : PlayerId
-dummyId = -1
-
-dummy : PlayerState
-dummy =
-  { deck = []
-  , discard = []
-  , hand = []
-  , victory = 0
-  , valid = False
-  }
-
-{- TODO use IDs below, not states -}
-
-{- similar for get ? -}
-dflGet : comparable -> Dict.Dict comparable b -> b -> b
-dflGet p d default = case Dict.get p d of
-                      Just r -> r
-                      Nothing -> default
-
-{- Task related things, for chaining together actions on a game state -}
-type alias GameTask = Task.Task String GameState
-
-doGameTask : GameTask -> Cmd Msg
-doGameTask = Task.perform (\str -> TaskFail str)
-                          (\state -> UpdateState state)
-
-{- update'. this function updates a value in a Dict. it is a noop if key is not there -}
-update' : comparable -> (v -> v) -> Dict.Dict comparable v -> Dict.Dict comparable v
-update' k f d =
-  case (Dict.get k d) of
-    Just v -> Dict.insert k (f v) d
-    Nothing -> d
-
-{- this is a no-op unless player has an empty deck and nonempty discard pile -}
-{- TODO maybe it would be better to have this shuffle your deck into your discard pile -}
-shufflePlayerDeck : PlayerId -> GameState -> GameTask
-shufflePlayerDeck pId st =
-  let p = dflGet pId st.players dummy in
-  if (not <| List.isEmpty p.deck) || (List.isEmpty p.deck && List.isEmpty p.discard)
-    then
-      succeed st
-    else
-      let (newDeck, newSeed) = shuffle' p.discard <| Random.initialSeed st.rng in
-      succeed {st | rng = intOfSeed newSeed
-                  , players = update' pId
-                                (\p -> {p | deck = newDeck, discard = []})
-                                st.players
-              }
-
-dealPlayerCard : PlayerId -> GameState -> GameTask
-dealPlayerCard pId st =
-  let p = dflGet pId st.players dummy in
-  {- if there is a card to deal, deal it -}
-  if (not <| List.isEmpty p.deck)
-    then
-      succeed {st | players = update' pId
-                        (\p -> {p | deck = dflTail p.deck, hand = dflHead p.deck urId :: p.hand})
-                        st.players
-              }
-  else
-    if (not <| List.isEmpty p.discard)
-      {- shuffle and retry if the discard isn't empty -}
-      then
-        (shufflePlayerDeck pId st) `Task.andThen` (\st -> dealPlayerCard pId st)
-      {- otherwise, no-op -}
-      else succeed st
-
-dealPlayerCards : PlayerId -> Int -> GameState -> GameTask
-dealPlayerCards p n st =
-  if n == 0 then succeed st
-  else
-    dealPlayerCard p st `Task.andThen` (\st -> dealPlayerCards p (n-1) st)
-
-{- deal a card to current player (at front of rotation) -}
-dealCurrentPlayerCards : Int -> GameState -> GameTask
-dealCurrentPlayerCards n st =
-  let current = dflHead st.playerOrder -1 in
-  dealPlayerCards current n st
-
-rotatePlayers : GameState -> GameTask
-rotatePlayers st =
-  succeed ({st | playerOrder = List.drop 1 st.playerOrder ++ List.take 1 st.playerOrder})
-
-initialDeal : GameState -> GameTask
-initialDeal st =
-    {- check if player 1 has a hand -}
-    let
-      nextId = (dflHead st.playerOrder -1)
-
-      nextPlayer = dflGet nextId st.players dummy
-    in
-    if nextPlayer.valid then
-      {- if so, we have dealt to everyone already -}
-      if not (List.isEmpty nextPlayer.hand) then
-        {- start the first action phase -}
-        succeed {st | phase = ActionPhase
-                    , actions = 1
-                    , coin = 0
-                    , buys = 1
-                }
-
-      else
-        {- if not, deal them a hand -}
-        Task.andThen (shufflePlayerDeck nextId st)
-                     (\st -> Task.andThen (dealPlayerCards nextId 5 st)
-                     (\st -> Task.andThen (rotatePlayers st)
-                     (\st -> initialDeal st)))
-
-    {- make sure we don't deal to dummy player, probably unnecessary -}
-    else succeed st
-
-{- get nth item in list -}
-dflNth : Int -> List a -> a -> a
-dflNth n l default =
-  case l of
-    [] -> default
-
-    h :: t ->
-      if n == 0 then h
-      else dflNth (n-1) t default
-
-{- drop nth item from list, or do nothing if list is too short -}
-dflDropNth : Int -> List a -> List a
-dflDropNth n l =
-  case l of
-    [] -> []
-
-    h :: t ->
-      if n == 0 then t
-      else h :: dflDropNth (n-1) t
 
 {- predicate checking for game over (called after each purchase) -}
 gameOver : GameState -> Bool
@@ -515,6 +190,7 @@ tallyScores state =
 
   in succeed {state | winners = List.map (\(s,p) -> (p,s)) winners}
 
+{- Respond to messages -}
 update : Msg -> GameState -> (GameState, Cmd Msg)
 update msg state =
   case msg of
@@ -651,8 +327,13 @@ update msg state =
 
         _ -> (state, Cmd.none)
 
+    GotServerMsg msg ->
+      (state, Cmd.none)
+
     _ -> (state, Cmd.none)
 
 subscriptions : GameState -> Sub Msg
 subscriptions model =
-  Sub.none
+  -- takes a string
+  fromServer GotServerMsg
+
