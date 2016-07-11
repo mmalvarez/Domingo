@@ -1,5 +1,6 @@
-import Html exposing (div, button, text, br, img, table, tr, td, strong, h1, h2, h3, h4, h5, h6)
-import Html.Attributes exposing (style)
+import Html exposing (..)
+import Html.Attributes exposing (..)
+import Html.Events exposing(..)
 import Html.App
 import Html.Events exposing (onClick)
 import Dict
@@ -40,9 +41,12 @@ woodcutterHowMany = 10
 villageHowMany : Int
 villageHowMany = 10
 
-{- state of game at the beginning. for now we allow just 1 player with id 0 -}
-startingState : GameState
-startingState =
+{- state of game at the beginning. for now we allow just 1 player with id 0
+   this will be configurable to a greater degree later
+   NB always update the RNG seed!
+ -}
+startingGameState : GameState
+startingGameState =
   { players = Dict.fromList [(0, startingPlayerState), (1, startingPlayerState)]
   , playerOrder = [0,1]
   , shop = Dict.fromList [(estateId, estateHowMany), (copperId, copperHowMany),
@@ -51,9 +55,17 @@ startingState =
   , actions = 0, coin = 0, buys = 0
   , purchases = [], plays = []
   , phase = PreGamePhase
-  , rng = 0 {- this is a dead value; gets clobbered by real randomness -}
+  , rng = 0 -- this _should_ always get overwritten
   , winners = []
-  , message = "nothing yet"
+  , message = "" -- TODO eventually get rid of this?
+  , gameId = ""
+  }
+
+startingClientState : ClientState
+startingClientState = ClientPreGame
+  { gidInput = Nothing
+  , rngInput = Nothing
+  , message = Nothing
   }
 
 main =
@@ -64,12 +76,12 @@ main =
     , subscriptions = subscriptions
   }
 
-init : (GameState, Cmd Msg)
-init = (startingState, Cmd.none)
+init : (ClientState, Cmd Msg)
+init = (startingClientState, Cmd.none)
 
 {- button generators -}
 
-{- for buttons on hand cards -}
+ {- for buttons on hand cards -}
 buttonGenHand pos =
   [tr [] [], button [ onClick (PlayCard pos) ] [ text ({-(toString pos) ++ -}" play") ]]
 
@@ -112,6 +124,23 @@ displayShop shop =
         (List.foldl (\cId acc -> acc ++ [displayCard cId (buttonGenShop cId shop), td [] []])
          [] (Dict.keys shop))
 
+{- TODO: new we need a new view method -}
+view clientState =
+  let output = 
+    case clientState of
+      ClientPreGame _ ->
+        div []
+        [text "You have not started a game yet!"]
+
+      _ -> text "not implemented yet"
+  in
+  div []
+    ([output] ++
+      [ br [] []
+      , text "Created By Ronald X Hackerino"])
+
+{- this used to be view; now it displays a game state -}
+{-
 view state =
   {- main div -}
   let
@@ -120,6 +149,7 @@ view state =
   in
   div []
     [ text ("Most recent server message: " ++ state.message), br [] []
+    {-
     , div [] (if not (state.phase == EndGamePhase)
               then
                  [text ("You are player " ++ toString currPid ++ ". Your hand:")
@@ -129,6 +159,7 @@ view state =
                 [ text "Game Over! Here are scores as (Id, score) pairs "
                 , br [] []
                 , text (toString state.winners) ])
+    -}
     , br [] []
     , text "Your resources:", br [] []
     , text ("Actions: " ++ toString state.actions), br [] []
@@ -148,19 +179,16 @@ view state =
     , button [ onClick EndPhase ] [ text "end current phase/turn"]
     , br [] []
     , button [ onClick StartGame ] [ text "start game" ]
+    , button [ onClick SpectateGame ] [ text "spectate game" ]
+    , text "with ID: ", input [ placeholder "Game ID", Html.Events.onInput UpdateGameId ] []
     , br [] []
-    , button [ onClick RestartGame ]  [ text "restart game" ]
+    , button [ onClick QuitGame ]  [ text "quit game" ]
     , br [] [], br [] []
-    , Html.form [Html.Attributes.id "connectForm"]
-         [Html.input [ Html.Attributes.id "connectInput"
-         , Html.Attributes.type' "submit"
-         , Html.Attributes.value "Submit"
-         ] []]
-    , br [] []
     , button [ onClick ShowState ] [ text "show game state in console" ]
     , br [] [], br [] [], br [] []
-    , text "Created By Ronald X Hackerino"
+
     ]
+-}
 
 {- predicate checking for game over (called after each purchase) -}
 gameOver : GameState -> Bool
@@ -179,7 +207,7 @@ scoreCards l =
               c.victory + i) 0 l
 
 {- called after game ends, determine winner -}
-tallyScores : GameState -> GameTask
+tallyScores : GameState -> GameState
 tallyScores state =
   let
     scorers = Dict.foldl
@@ -188,132 +216,191 @@ tallyScores state =
 
     winners = List.sortWith (\(s1,p1) (s2,p2) -> compare s2 s1) scorers
 
-  in succeed {state | winners = List.map (\(s,p) -> (p,s)) winners}
+  in {state | winners = List.map (\(s,p) -> (p,s)) winners}
 
+{- Convenience wrapper for mucking with client's game state -}
+updateGameState : ClientState -> GameState -> ClientState
+updateGameState cs gs =
+    case cs of
+        {- note that we overwrite game ID to keep things consistent -}
+        ClientPlay cps -> ClientPlay {cps | gameId = gs.gameId
+                                          , gameState = gs}
+
+        ClientSpectate css -> ClientSpectate {css | gameId = gs.gameId
+                                                  , gameState = Just gs}
+
+        _ -> cs
+      
 {- Respond to messages -}
-update : Msg -> GameState -> (GameState, Cmd Msg)
+update : Msg -> ClientState -> (ClientState, Cmd Msg)
 update msg state =
-  case msg of
+  case (msg, state) of
 
-    ShowState ->
+    (ShowState, _) ->
       (Debug.log (toString state) state, Cmd.none)
 
-    StartGame ->
-      case state.phase of
-        PreGamePhase ->
-          ({ state | phase = DealPhase},
-           Random.generate InitRandom (Random.int Random.minInt Random.maxInt))
+    (StartGame, ClientPreGame cst) ->
+        -- we can only start if inputs are filled in
+        case (cst.gidInput, cst.rngInput) of
+            (Just gid, Just rngIn) ->
+                ( ClientPlay { gameId = gid
+                             , gameState = {startingGameState | rng = rngIn}
+                             , message = cst.message },
+                  Random.generate InitRandom (Random.int Random.minInt Random.maxInt))
+            (_, _) -> (state, Cmd.none)
+                   
+    (SpectateGame, ClientPreGame cst) ->
+        case cst.gidInput of
+            Just gid -> ( ClientSpectate { gameId = gid
+                                         , gameState = Nothing
+                                         , message = cst.message }, Cmd.none)
+            Nothing -> (state, Cmd.none)
 
-        _ -> (state, Cmd.none)
+    {- TODO: let server/other clients know we quit? -}
+    (QuitGame, _) ->
+         case state of
+             ClientPlay _ -> (startingClientState, Cmd.none)
 
-    RestartGame ->
-      (startingState, Cmd.none)
+             ClientSpectate _ -> (startingClientState, Cmd.none)
 
-    InitRandom newRng ->
-      let state' = {state | rng = newRng} in
-      (state', doGameTask (initialDeal state'))
+             _ -> (state, Cmd.none)
 
-    UpdateState state' ->
-      (state', Cmd.none)
+    {- Should now be called only when user requests it -}
+    {- TODO: make sure we trigger the initial deal some other way -}
+    (InitRandom newRng, ClientPreGame cpg) ->
+        (ClientPreGame {cpg | rngInput = Just newRng}, Cmd.none)
 
-    PlayCard pos ->
+            {-
+        let gst = cp.gameState in
+        case gst.phase of
+            PreGamePhase ->
+                let gst' = {gst | rng = newRng} in
+                (ClientPlay { cp | gameState = gst'}
+                            , doGameTask (initialDeal state'))
+            
+            _ -> (state, Cmd.none)
+-}
+
+    {- TODO: Make sure all state updates go through a single
+       function/message to make sure all get logged for spectator mode
+     -}
+    (UpdateClientState cst, _) ->
+      (cst, Cmd.none)
+
+    (PlayCard pos, ClientPlay cp) ->
       let foo = Debug.log ("Playing card in position: " ++ toString pos) "" in
       let
-        pId = dflHead state.playerOrder urId
+        gst = cp.gameState
+          
+        pId = dflHead gst.playerOrder urId
 
-        player = dflGet pId state.players dummy
+        player = dflGet pId gst.players dummy
 
         cId = dflNth pos player.hand -1
 
         card = dflGet cId allCards urCard
 
         newHand = dflDropNth pos player.hand
+
       in
-      case state.phase of
+
+      case gst.phase of
         ActionPhase ->
-          {- if this card is not an action -}
-          if card.playedEffect == Nothing
-          then (state, Cmd.none)
-          else
-            if state.actions > 0
-            {- calculate the state after deducting card costs -}
-            then let state' =
-              {state | plays = cId :: state.plays
-                     , actions = state.actions - 1
-                     , players = update' pId (\p -> {p | hand = newHand })
-                                  state.players
-              } in
-              case card.playedEffect of
-                Nothing -> (state', Cmd.none)
-                Just effect -> effect state'
+         case card.playedEffect of
+             {- if this card is not an action, do not play it -}
+             Nothing -> (state, Cmd.none)
 
-            else (state, Cmd.none)
+             Just eff ->
+                if gst.actions > 0
+                  {- calculate the state after deducting card costs -}
+                  then let gst' =
+                      {gst | plays = cId :: gst.plays
+                      , actions = gst.actions - 1
+                      , players = update' pId (\p -> {p | hand = newHand })
+                                  gst.players}
+                  in
+                      -- TODO I am concerned this has the wrong precedence (elsewhere too)
+                      (gst' |> updateGameState state
+                      , Cmd.none)
 
+                  else (state, Cmd.none)
+                      
         CoinPhase ->
-          {- make sure we don't play valueless cards as coins -}
-          if card.spentValue > 0 then
-            ( {state | plays = cId :: state.plays
-                     , coin =  state.coin + card.spentValue
-                     , players = update' pId (\p -> {p | hand = newHand}) state.players
-              }
-            , Cmd.none)
-          else (state, Cmd.none)
-
+         {- make sure we don't play valueless cards as coins -}
+         if card.spentValue <= 0 then (state, Cmd.none)
+                     
+         else
+             let 
+                 gst' =  {gst | plays = cId :: gst.plays
+                         , coin =  gst.coin + card.spentValue
+                         , players = update' pId (\p -> {p | hand = newHand})
+                                     gst.players
+                         }
+                     
+                in (gst' |> updateGameState state, Cmd.none)
+                    
+        {- not the right time to play a card -}
         _ -> (state, Cmd.none)
-
-    BuyCard cId ->
+            
+    (BuyCard cId, ClientPlay cp) ->
       let foo = Debug.log ("Buying card with id: " ++ toString cId) "" in
       let
-        pId = dflHead state.playerOrder urId
+        gst = cp.gameState
+          
+        pId = dflHead gst.playerOrder urId
 
-        player = dflGet pId state.players dummy
+        player = dflGet pId gst.players dummy
 
         card = dflGet cId allCards urCard
       in
-      case state.phase of
+      case gst.phase of
         BuyPhase ->
-          if state.buys > 0 && state.coin >= card.cost
+          if gst.buys > 0 && gst.coin >= card.cost
           then
-            let state' =
-              { state | purchases = cId :: state.purchases
-                      , buys = state.buys - 1
-                      , coin = state.coin - card.cost
-                      , shop = update' cId (\i -> i - 1) state.shop
+            let gst' =
+              { gst | purchases = cId :: gst.purchases
+                    , buys = gst.buys - 1
+                    , coin = gst.coin - card.cost
+                    , shop = update' cId (\i -> i - 1) gst.shop
                }
             in
-            if gameOver state'
+            if gameOver gst'
             then
-              {- make sure the card they bought makes it into their deck -}
-              let state'' = {state' | phase = EndGamePhase
-                                    , players = update' pId
-                                                  (\p -> {p | discard = p.discard ++ p.hand ++ state'.purchases ++ state'.plays
-                                                            , hand = []
-                                                  }) state'.players
+              {- make sure the card they bought makes it into their deck if game is about to end -}
+              let gst'' = {gst' | phase = EndGamePhase
+                                , players =
+                                    update' pId
+                                        (\p -> {p | discard = p.discard ++
+                                                              p.hand ++
+                                                              gst'.purchases ++
+                                                              gst'.plays
+                                                  , hand = []})
+                                         gst'.players
                             } in
-              (state'', doGameTask (tallyScores state''))
+              (tallyScores gst'' |> updateGameState state, Cmd.none)
 
-            else (state', Cmd.none)
+            else (gst' |> updateGameState state, Cmd.none)
 
           else (state, Cmd.none)
 
         _ -> (state, Cmd.none)
 
-    EndPhase ->
+    (EndPhase, ClientPlay cp) ->
       let
-        pId = dflHead state.playerOrder urId
-
-        player = dflGet pId state.players dummy
+        gst = cp.gameState
+        pId = dflHead gst.playerOrder urId
+        player = dflGet pId gst.players dummy
       in
-      case state.phase of
-        ActionPhase -> ({state | phase = CoinPhase}, Cmd.none)
-        CoinPhase -> ({state | phase = BuyPhase}, Cmd.none)
+      case gst.phase of
+        ActionPhase -> ({gst | phase = CoinPhase} |> updateGameState state, Cmd.none)
+        CoinPhase -> ({gst | phase = BuyPhase} |> updateGameState state, Cmd.none)
         BuyPhase ->
           {- first, add buys and plays back into discard pile, and reset resource values -}
-          let state' = {state | players = update' pId
-                                            (\p -> {p | discard = p.discard ++ p.hand ++ state.purchases ++ state.plays
+          let gst' = {gst     | players = update' pId
+                                            (\p -> {p | discard = p.discard ++ p.hand ++ gst.purchases ++ gst.plays
                                                       , hand = []
                                                    }
-                                            ) state.players
+                                            ) gst.players
                               , purchases = []
                               , plays = []
                               , coin = 0
@@ -322,18 +409,27 @@ update msg state =
                               , phase = ActionPhase
                        }
           in
-          (state', doGameTask (Task.andThen (dealPlayerCards pId 5 state')
-                                (\st -> rotatePlayers st)))
+          (gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateGameState state, Cmd.none)
 
         _ -> (state, Cmd.none)
 
-    GotServerMsg msg ->
-      (state, Cmd.none)
+    -- handle asynchronous server messages
+    (GotServerMsg msg, ClientPreGame cpgs) ->
+        (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
+
+    (GotServerMsg msg, ClientPlay cps) ->
+        (ClientPlay {cps | message = Just msg}, Cmd.none)
+
+    (GotServerMsg msg, ClientSpectate css) ->
+        (ClientSpectate {css | message = Just msg}, Cmd.none)
+
+-- not implementd yet
+--    (GotServerMsg msg, ClientSpectate cs) ->
+--      ({gst | message})
 
     _ -> (state, Cmd.none)
 
-subscriptions : GameState -> Sub Msg
+subscriptions : ClientState -> Sub Msg
 subscriptions model =
   -- takes a string
   fromServer GotServerMsg
-

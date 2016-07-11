@@ -84,12 +84,10 @@ dflGet p d default = case Dict.get p d of
                       Just r -> r
                       Nothing -> default
 
-{- Task related things, for chaining together actions on a game state -}
-type alias GameTask = Task.Task String GameState
-
-doGameTask : GameTask -> Cmd Msg
-doGameTask = Task.perform (\str -> TaskFail str)
-                          (\state -> UpdateState state)
+{- run tasks on a client state -}
+doClientTask : ClientTask -> Cmd Msg
+doClientTask = Task.perform (\str -> TaskFail str)
+                            (\state -> UpdateClientState state)
 
 {- update'. this function updates a value in a Dict. it is a noop if key is not there -}
 update' : comparable -> (v -> v) -> Dict.Dict comparable v -> Dict.Dict comparable v
@@ -98,57 +96,63 @@ update' k f d =
     Just v -> Dict.insert k (f v) d
     Nothing -> d
 
+{- shuffle player's discard pile into their deck -}
 {- this is a no-op unless player has an empty deck and nonempty discard pile -}
-{- TODO maybe it would be better to have this shuffle your deck into your discard pile -}
-shufflePlayerDeck : PlayerId -> GameState -> GameTask
+{- NOTE affects the RNG -}
+shufflePlayerDeck : PlayerId -> GameState -> GameState
 shufflePlayerDeck pId st =
   let p = dflGet pId st.players dummy in
   if (not <| List.isEmpty p.deck) || (List.isEmpty p.deck && List.isEmpty p.discard)
     then
-      succeed st
+        st
     else
       let (newDeck, newSeed) = shuffle' p.discard <| Random.initialSeed st.rng in
-      succeed {st | rng = intOfSeed newSeed
-                  , players = update' pId
-                                (\p -> {p | deck = newDeck, discard = []})
-                                st.players
-              }
-
-dealPlayerCard : PlayerId -> GameState -> GameTask
+      {st | rng = intOfSeed newSeed
+      , players = update' pId
+                  (\p -> {p | deck = newDeck, discard = []})
+                      st.players
+      }
+        
+{- Deal the given player a card from the top of their deck -}
+{- NOTE affects the RNG (if it triggers deck shuffling) -}
+dealPlayerCard : PlayerId -> GameState -> GameState
 dealPlayerCard pId st =
   let p = dflGet pId st.players dummy in
   {- if there is a card to deal, deal it -}
   if (not <| List.isEmpty p.deck)
     then
-      succeed {st | players = update' pId
-                        (\p -> {p | deck = dflTail p.deck, hand = dflHead p.deck urId :: p.hand})
-                        st.players
-              }
+        {st | players = update' pId
+             (\p -> {p | deck = dflTail p.deck, hand = dflHead p.deck urId :: p.hand})
+             st.players
+        }
   else
-    if (not <| List.isEmpty p.discard)
-      {- shuffle and retry if the discard isn't empty -}
+      if (not <| List.isEmpty p.discard)
+      {- shuffle and retry if the discard isn't empty
+         (at this point we know deck is also empty)
+       -}
       then
-        (shufflePlayerDeck pId st) `Task.andThen` (\st -> dealPlayerCard pId st)
+        shufflePlayerDeck pId st |> dealPlayerCard pId
+                
       {- otherwise, no-op -}
-      else succeed st
+      else st
 
-dealPlayerCards : PlayerId -> Int -> GameState -> GameTask
+dealPlayerCards : PlayerId -> Int -> GameState -> GameState
 dealPlayerCards p n st =
-  if n == 0 then succeed st
+  if n == 0 then st
   else
-    dealPlayerCard p st `Task.andThen` (\st -> dealPlayerCards p (n-1) st)
+      dealPlayerCard p st |> dealPlayerCards p (n-1)
 
 {- deal a card to current player (at front of rotation) -}
-dealCurrentPlayerCards : Int -> GameState -> GameTask
+dealCurrentPlayerCards : Int -> GameState -> GameState
 dealCurrentPlayerCards n st =
   let current = dflHead st.playerOrder -1 in
   dealPlayerCards current n st
 
-rotatePlayers : GameState -> GameTask
+rotatePlayers : GameState -> GameState
 rotatePlayers st =
-  succeed ({st | playerOrder = List.drop 1 st.playerOrder ++ List.take 1 st.playerOrder})
+  {st | playerOrder = List.drop 1 st.playerOrder ++ List.take 1 st.playerOrder}
 
-initialDeal : GameState -> GameTask
+initialDeal : GameState -> GameState
 initialDeal st =
     {- check if player 1 has a hand -}
     let
@@ -156,25 +160,25 @@ initialDeal st =
 
       nextPlayer = dflGet nextId st.players dummy
     in
+    {- make sure we don't deal to dummy player, probably unnecessary -}
     if nextPlayer.valid then
-      {- if so, we have dealt to everyone already -}
+      {- at this point, we have dealt to everyone already -}
       if not (List.isEmpty nextPlayer.hand) then
         {- start the first action phase -}
-        succeed {st | phase = ActionPhase
-                    , actions = 1
-                    , coin = 0
-                    , buys = 1
-                }
-
+          {st | phase = ActionPhase
+              , actions = 1
+              , coin = 0
+              , buys = 1
+          }
+          
       else
         {- if not, deal them a hand -}
-        Task.andThen (shufflePlayerDeck nextId st)
-                     (\st -> Task.andThen (dealPlayerCards nextId 5 st)
-                     (\st -> Task.andThen (rotatePlayers st)
-                     (\st -> initialDeal st)))
+        shufflePlayerDeck nextId st |>
+         dealPlayerCards nextId 5 |>
+         rotatePlayers |>
+         initialDeal
 
-    {- make sure we don't deal to dummy player, probably unnecessary -}
-    else succeed st
+    else st
 
 {- get nth item in list -}
 dflNth : Int -> List a -> a -> a

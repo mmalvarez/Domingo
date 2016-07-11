@@ -50,8 +50,8 @@ woodcutterCard =
            , text = Just "2 coin and 1 buy"
            , kind = "Action"
            , cost = 3
-           , playedEffect = Just (\st -> ({st | buys = st.buys + 1
-                                             , coin = st.coin + 2}, Cmd.none))
+           , playedEffect = Just (\st -> {st | buys = st.buys + 1
+                                             , coin = st.coin + 2})
   }
 
 villageId = 2001
@@ -62,9 +62,7 @@ villageCard =
            , text = Just "1 card and 2 actions"
            , kind = "Action"
            , cost = 3
-           , playedEffect = Just (\st -> let st' = {st | actions = st.actions + 2} in
-                                            (st',
-                                             doGameTask (dealCurrentPlayerCards 1 st')))
+           , playedEffect = Just (\st -> {st | actions = st.actions + 2} |> dealCurrentPlayerCards 1)
   }
 
 {- global dictionary used to look up cards by ID -}

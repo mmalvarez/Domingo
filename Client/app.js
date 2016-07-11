@@ -11,12 +11,12 @@ app.get('/Domingo.js', function(req,res){
 });
 
 io.on('connection', function(socket){
-    socket.emit('fromServer', "hi");
+    socket.emit('game', "hi");
 
-    socket.on('toServer', function(msg){
+    socket.on('response', function(msg){
 	console.log('message: ' + msg);
     });
-	      
+
     socket.on('disconnect', function(){
 	console.log('user disconnected');
     });
