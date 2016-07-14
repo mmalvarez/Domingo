@@ -2,17 +2,20 @@ import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing(..)
 import Html.App
-import Html.Events exposing (onClick)
 import Dict
 import List
 import Random
 import Task exposing (succeed)
+import String exposing (toInt)
 
 {- import the rest of Domingo -}
 import DomingoModel exposing (..)
 import DomingoPorts exposing(..)
 import DomingoActions exposing(..)
 import DomingoCards exposing(..)
+
+
+{- TODO: Fix div structure of display functions -}
 
 {- state of a player at the beginning -}
 startingDeck : List CardId
@@ -41,10 +44,10 @@ woodcutterHowMany = 10
 villageHowMany : Int
 villageHowMany = 10
 
-{- state of game at the beginning. for now we allow just 1 player with id 0
-   this will be configurable to a greater degree later
-   NB always update the RNG seed!
- -}
+-- if the rng is ever set to this value it will be assumed uninitialized
+rngBogusValue : Int
+rngBogusValue = 0
+
 startingGameState : GameState
 startingGameState =
   { players = Dict.fromList [(0, startingPlayerState), (1, startingPlayerState)]
@@ -55,7 +58,7 @@ startingGameState =
   , actions = 0, coin = 0, buys = 0
   , purchases = [], plays = []
   , phase = PreGamePhase
-  , rng = 0 -- this _should_ always get overwritten
+  , rng = rngBogusValue
   , winners = []
   , message = "" -- TODO eventually get rid of this?
   , gameId = ""
@@ -71,7 +74,7 @@ startingClientState = ClientPreGame
 main =
   Html.App.program
     { init = init
-    , view = view
+    , view = displayClientState
     , update = update
     , subscriptions = subscriptions
   }
@@ -119,76 +122,124 @@ buttonGenShop cId shop =
   [tr [] [], button [ onClick (BuyCard cId)] [ text ("Buy (" ++ toString (dflGet cId shop 0) ++ " remain)") ]]
 
 {- display cards in shop -}
-displayShop shop =
+-- isSpectator used to control whether buttons show up, eventually
+displayShop shop isSpectator =
   table []
-        (List.foldl (\cId acc -> acc ++ [displayCard cId (buttonGenShop cId shop), td [] []])
+        (List.foldl (\cId acc -> acc ++
+                         [displayCard cId (buttonGenShop cId shop), td [] []])
          [] (Dict.keys shop))
 
-{- TODO: new we need a new view method -}
-view clientState =
-  let output = 
-    case clientState of
-      ClientPreGame _ ->
-        div []
-        [text "You have not started a game yet!"]
-
-      _ -> text "not implemented yet"
-  in
-  div []
-    ([output] ++
-      [ br [] []
-      , text "Created By Ronald X Hackerino"])
-
-{- this used to be view; now it displays a game state -}
-{-
-view state =
-  {- main div -}
-  let
-    currPid = dflHead state.playerOrder dummyId
-    currPlayer = dflGet currPid state.players dummy
-  in
-  div []
-    [ text ("Most recent server message: " ++ state.message), br [] []
-    {-
-    , div [] (if not (state.phase == EndGamePhase)
+-- display the state of the game
+-- isSpectator isn't used right now, may be later?
+displayGameState gameState isSpectator =
+    let
+        currPid = dflHead gameState.playerOrder dummyId
+        currPlayer = dflGet currPid gameState.players dummy
+        output =
+            if gameState.phase == EndGamePhase
               then
-                 [text ("You are player " ++ toString currPid ++ ". Your hand:")
-                 , br [] []
-                 , displayHand currPlayer.hand]
-              else
-                [ text "Game Over! Here are scores as (Id, score) pairs "
-                , br [] []
-                , text (toString state.winners) ])
-    -}
-    , br [] []
-    , text "Your resources:", br [] []
-    , text ("Actions: " ++ toString state.actions), br [] []
-    , text ("Coin: " ++ toString state.coin), br [] []
-    , text ("Buys: " ++ toString state.buys), br [] []
-    , br [] []
-    , displayShop state.shop
-    , br [] []
-    , br [] []
-    , text ("Current Phase: " ++ toString state.phase)
-    , br [] []
-    , text ("Your deck has " ++ toString (List.length currPlayer.deck) ++ " cards")
-    , br [] []
-    , text (toString (List.length (state.plays)) ++ " cards have been played this turn; "
-                  ++ (toString (List.length (state.purchases)) ++ " cards have been bought this turn"))
-    , br [] []
-    , button [ onClick EndPhase ] [ text "end current phase/turn"]
-    , br [] []
-    , button [ onClick StartGame ] [ text "start game" ]
-    , button [ onClick SpectateGame ] [ text "spectate game" ]
-    , text "with ID: ", input [ placeholder "Game ID", Html.Events.onInput UpdateGameId ] []
-    , br [] []
-    , button [ onClick QuitGame ]  [ text "quit game" ]
-    , br [] [], br [] []
-    , button [ onClick ShowState ] [ text "show game state in console" ]
-    , br [] [], br [] [], br [] []
+                  -- display score if game is over
+                  [ text "Game Over! Here are scores as (Id, score) pairs "
+                  , br [] []
+                  , text (toString gameState.winners) ]
 
-    ]
--}
+              else
+                  -- otherwise, show the game
+                  [text ("You are player " ++ toString currPid ++ ". Your hand:")
+                  , br [] []
+                  , displayHand currPlayer.hand
+                  , br [] []
+                  , text "Your resources:", br [] []
+                  , text ("Actions: " ++ toString gameState.actions), br [] []
+                  , text ("Coin: " ++ toString gameState.coin), br [] []
+                  , text ("Buys: " ++ toString gameState.buys), br [] []
+                  , br [] []
+                  , text "Shop:", br [] []
+                  , displayShop gameState.shop isSpectator
+                  , br [] []
+                  , br [] []
+                  -- TODO prune/reorganize this information display
+                  , text ("Current Phase: " ++ toString gameState.phase)
+                  , br [] []
+                  , text ("Your deck has " ++ toString (List.length currPlayer.deck) ++ " cards")
+                  , br [] []
+                  , text (toString (List.length (gameState.plays)) ++ " cards have been played this turn; "
+                              ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
+                  ]
+    in div [] output
+        
+                              
+-- display the main div
+displayMainDiv clientState =
+    case clientState of
+        ClientPreGame _ ->
+            div []
+                [ h1 [] [text "Domingo"]
+                -- buttons
+                , input [onInput UpdateGameId, placeholder "Game ID"] []
+                , br [] []
+                , input [onInput UpdateSeedToUse, placeholder "Optional Seed; Randomly Generated if Empty"] []
+                , br [] []
+                , button [onClick StartGame]  [text "start game"]
+                , br [] []
+                , button [onClick SpectateGame] [text "spectate game"]
+                , br [] []
+                , button [ onClick RestartClient ]  [ text "restart client" ]
+                ]
+
+        ClientPlay cpState ->
+            div []
+                <| [ h2 [] [text <| "Playing Domingo. Game ID: " ++ toString cpState.gameId] ]
+                   ++
+                   -- false because you are not spectator
+                       [displayGameState cpState.gameState False]
+  
+        ClientSpectate csState ->
+            case csState.gameState of
+                -- TODO - limit knowledge of game state (eventually...)
+                Just gSt ->
+                    -- true because you are spectator
+                    displayGameState gSt True
+                        
+                Nothing ->
+                    text "Your game has not started yet."
+
+
+{- Displays some options that affect the entire
+   client and are displayed regardless of game state -}
+displayClientOptions clientState =
+    let message =
+            case
+            (case clientState of
+                 ClientPreGame cpg -> cpg.message
+                 
+                 ClientPlay cpg -> cpg.message
+                                                           
+                 ClientSpectate cpg -> cpg.message
+            ) of
+                
+            Nothing -> ""
+            Just m -> m
+    in
+    div []
+        [ button [ onClick RestartClient ] [text "restart client" ]
+        , br [] []
+        , text ("Most recent server message: " ++ message)
+        , br [] []
+        , button [ onClick ShowState ] [ text "show client state in console" ]
+        -- TODO: eventually add a server maintenance button here?
+        ]
+            
+displayClientState clientState =
+  let mainDiv = displayMainDiv clientState
+      clientOptions =  displayClientOptions clientState
+  in
+  div []
+    ([ mainDiv ] ++
+      [ br [] [], br [] []] ++
+      [ clientOptions ] ++
+      [ br [] [], br [] []
+      , text "Created By Ronald X Hackerino"])
 
 {- predicate checking for game over (called after each purchase) -}
 gameOver : GameState -> Bool
@@ -239,15 +290,39 @@ update msg state =
     (ShowState, _) ->
       (Debug.log (toString state) state, Cmd.none)
 
+    (UpdateGameId gId, ClientPreGame cst) ->
+        (ClientPreGame {cst | gidInput = Just gId}, Cmd.none)
+
+    -- no-op if
+    -- TODO this will cause issues with text box contents being out of sync
+    -- let's fix this later
+    (UpdateSeedToUse seedStr, ClientPreGame cst) ->
+        case (toInt seedStr) of
+            Ok seed -> (ClientPreGame {cst | rngInput = Just seed}, Cmd.none)
+            Err _ -> (ClientPreGame cst, Cmd.none)
+
     (StartGame, ClientPreGame cst) ->
-        -- we can only start if inputs are filled in
-        case (cst.gidInput, cst.rngInput) of
-            (Just gid, Just rngIn) ->
-                ( ClientPlay { gameId = gid
-                             , gameState = {startingGameState | rng = rngIn}
-                             , message = cst.message },
-                  Random.generate InitRandom (Random.int Random.minInt Random.maxInt))
-            (_, _) -> (state, Cmd.none)
+        -- we can only start if game id is filled in
+        -- if the rng is not filled in,
+        -- InitRandomAndDeal will take care of it                                
+        case cst.gidInput of
+            Just gid ->
+                let startState =
+                        case cst.rngInput of
+                            Just rngIn ->
+                                {startingGameState | rng = rngIn}
+                            Nothing ->
+                                startingGameState
+                in
+                ( ClientPlay
+                       { gameId = gid
+                       , gameState = startingGameState
+                       , message = cst.message
+                       },
+                  Random.generate InitRandomAndDeal
+                      (Random.int Random.minInt Random.maxInt))
+                    
+            Nothing -> (state, Cmd.none)
                    
     (SpectateGame, ClientPreGame cst) ->
         case cst.gidInput of
@@ -257,29 +332,28 @@ update msg state =
             Nothing -> (state, Cmd.none)
 
     {- TODO: let server/other clients know we quit? -}
-    (QuitGame, _) ->
-         case state of
-             ClientPlay _ -> (startingClientState, Cmd.none)
+    (RestartClient, _) ->
+        (startingClientState, Cmd.none)
 
-             ClientSpectate _ -> (startingClientState, Cmd.none)
-
-             _ -> (state, Cmd.none)
-
-    {- Should now be called only when user requests it -}
-    {- TODO: make sure we trigger the initial deal some other way -}
-    (InitRandom newRng, ClientPreGame cpg) ->
-        (ClientPreGame {cpg | rngInput = Just newRng}, Cmd.none)
-
-            {-
-        let gst = cp.gameState in
-        case gst.phase of
-            PreGamePhase ->
-                let gst' = {gst | rng = newRng} in
-                (ClientPlay { cp | gameState = gst'}
-                            , doGameTask (initialDeal state'))
-            
-            _ -> (state, Cmd.none)
--}
+    {- Checks to see if the RNG default value (bogus value) has not been
+       clobbered yet. If it is still default we use the random one we just generated -}
+    (InitRandomAndDeal newRng, ClientPlay cp) ->
+        let cp' =
+                if cp.gameState.rng == rngBogusValue
+                then
+                    {cp | gameState =
+                         let cpGs = cp.gameState in
+                         {cpGs | rng = newRng}}
+                else
+                    cp
+        in
+            let cpUpdateGameState cp gSt =
+                    {cp | gameState = gSt}
+            in
+                (cp' |> (\cp -> cp.gameState)
+                      |> initialDeal |> updateGameState (ClientPlay cp'),
+                          Cmd.none
+                         )
 
     {- TODO: Make sure all state updates go through a single
        function/message to make sure all get logged for spectator mode

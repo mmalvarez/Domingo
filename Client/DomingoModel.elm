@@ -98,18 +98,22 @@ type Msg = GotServerMsg String
           | ShowState
           {- useful ones -}
           {- need ones for manually/automatically setting RNG -}
-          | UpdateGameId
+          | UpdateGameId String
+          | UpdateSeedToUse String
+          -- in pregame state, update seed to use in game
           | StartGame
           | SpectateGame
-          | QuitGame
+--        | QuitGame
+          | RestartClient
           | PlayCard Int
           | EndPhase
           | BuyCard CardId
           | EndBuy
           {- message sent when new random seed is generated -}
-          {- might want to deprecate this one -}
-          | InitRandom Int
+          -- gets randomness if the user did not provide it, and deals initial hand
+          | InitRandomAndDeal Int
           {- if a task fails - should be a no op, possibly log error -}
           | TaskFail String
           {- general call to update client's state -}
           | UpdateClientState ClientState
+          | NoOp -- should never be responded to
