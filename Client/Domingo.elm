@@ -16,6 +16,10 @@ import DomingoCards exposing(..)
 
 
 {- TODO: Fix div structure of display functions -}
+{- TODO: implement initial deal more sanely,
+   use updateState -}
+{- TODO: More logically divide between Domingo,
+   DomingoActions, and DomingoConfig -}
 
 {- state of a player at the beginning -}
 startingDeck : List CardId
@@ -59,8 +63,8 @@ startingGameState =
   , purchases = [], plays = []
   , phase = PreGamePhase
   , rng = rngBogusValue
-  , winners = []
-  , message = "" -- TODO eventually get rid of this?
+--  , winners = []
+--  , message = "" -- TODO eventually get rid of this?
   , gameId = ""
   }
 
@@ -95,12 +99,12 @@ buttonGenHand pos =
 displayCard cId footer =
   let c = dflGet cId allCards urCard in
   table [Html.Attributes.style [("outlineColor", "black"), ("outlineStyle", "solid")]]
-        ([ strong [] [h3 [] [text c.name]], tr [] []
-         , strong [] [text c.kind], tr [] []
-         , text ("Victory: " ++ toString c.victory), tr [] []
-         , text ("Value: " ++ toString c.spentValue), tr [] []
-         , text ("Cost: " ++ toString c.cost) ] ++
-           footer)
+        ([ tr [] [ td [] [strong [] [h3 [] [text c.name]]] ]
+         , tr [] [ td [] [strong [] [text c.kind]]]
+         , tr [] [ td [] [text ("Victory: " ++ toString c.victory) ] ]
+         , tr [] [ td [] [text ("Value: " ++ toString c.spentValue)] ]
+         , tr [] [ td [] [text ("Cost: " ++ toString c.cost) ] ] ] ++
+           footer) -- TODO should footer really be in the table?
 
 {- bind for Maybe -}
 (>>==) mx f =
@@ -123,11 +127,32 @@ buttonGenShop cId shop =
 
 {- display cards in shop -}
 -- isSpectator used to control whether buttons show up, eventually
+-- TODO fix this table structure pls
 displayShop shop isSpectator =
   table []
         (List.foldl (\cId acc -> acc ++
-                         [displayCard cId (buttonGenShop cId shop), td [] []])
+                         [td [] [displayCard cId (buttonGenShop cId shop)], td [] []])
          [] (Dict.keys shop))
+
+displayWinnersTable gst =
+  let
+    scorers = Dict.foldl
+                (\k v acc -> ((v.victory + scoreCards (v.deck ++ v.hand ++ v.discard)), k) :: acc)
+                [] gst.players
+
+    winners = List.sortWith (\(s1,p1) (s2,p2) -> compare s2 s1) scorers
+
+  in List.map (\(s,p) ->
+      tr [] [ td [] [text ("Player " ++ toString p)]
+            , td [] [text (toString p ++ " VP")] ]
+      ) winners
+
+-- display the winners list for the given game state
+displayWinners gst =
+    div [] [ text "Game Over! Scores:", br [] []
+           , table [] ( [ tr [] [ th [] [text "player"]
+                                , th [] [text "victory score"]]]
+                            ++ displayWinnersTable gst)]
 
 -- display the state of the game
 -- isSpectator isn't used right now, may be later?
@@ -138,35 +163,31 @@ displayGameState gameState isSpectator =
         output =
             if gameState.phase == EndGamePhase
               then
-                  -- display score if game is over
-                  [ text "Game Over! Here are scores as (Id, score) pairs "
-                  , br [] []
-                  , text (toString gameState.winners) ]
-
+                  displayWinners gameState
               else
                   -- otherwise, show the game
-                  [text ("You are player " ++ toString currPid ++ ". Your hand:")
-                  , br [] []
-                  , displayHand currPlayer.hand
-                  , br [] []
-                  , text "Your resources:", br [] []
-                  , text ("Actions: " ++ toString gameState.actions), br [] []
-                  , text ("Coin: " ++ toString gameState.coin), br [] []
-                  , text ("Buys: " ++ toString gameState.buys), br [] []
-                  , br [] []
-                  , text "Shop:", br [] []
-                  , displayShop gameState.shop isSpectator
-                  , br [] []
-                  , br [] []
-                  -- TODO prune/reorganize this information display
-                  , text ("Current Phase: " ++ toString gameState.phase)
-                  , br [] []
-                  , text ("Your deck has " ++ toString (List.length currPlayer.deck) ++ " cards")
-                  , br [] []
-                  , text (toString (List.length (gameState.plays)) ++ " cards have been played this turn; "
-                              ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
-                  ]
-    in div [] output
+                  div [] [ text ("You are player " ++ toString currPid ++ ". Your hand:")
+                         , br [] []
+                         , displayHand currPlayer.hand
+                         , br [] []
+                         , text "Your resources:", br [] []
+                         , text ("Actions: " ++ toString gameState.actions), br [] []
+                         , text ("Coin: " ++ toString gameState.coin), br [] []
+                         , text ("Buys: " ++ toString gameState.buys), br [] []
+                         , br [] []
+                         , text "Shop:", br [] []
+                         , displayShop gameState.shop isSpectator
+                         , br [] []
+                         , br [] []
+                         -- TODO prune/reorganize this information display
+                         , text ("Current Phase: " ++ toString gameState.phase)
+                         , br [] []
+                         , text ("Your deck has " ++ toString (List.length currPlayer.deck) ++ " cards")
+                         , br [] []
+                         , text (toString (List.length (gameState.plays)) ++ " cards have been played this turn; "
+                                     ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
+                         ]
+    in output
         
                               
 -- display the main div
@@ -192,7 +213,8 @@ displayMainDiv clientState =
                 <| [ h2 [] [text <| "Playing Domingo. Game ID: " ++ toString cpState.gameId] ]
                    ++
                    -- false because you are not spectator
-                       [displayGameState cpState.gameState False]
+                   [displayGameState cpState.gameState False] ++
+                   [button [onClick EndPhase] [text "end phase/turn"]]
   
         ClientSpectate csState ->
             case csState.gameState of
@@ -218,8 +240,8 @@ displayClientOptions clientState =
                  ClientSpectate cpg -> cpg.message
             ) of
                 
-            Nothing -> ""
-            Just m -> m
+            Nothing -> "message:"
+            Just m -> "message: " ++ m
     in
     div []
         [ button [ onClick RestartClient ] [text "restart client" ]
@@ -257,30 +279,34 @@ scoreCards l =
               let c = dflGet cId allCards urCard in
               c.victory + i) 0 l
 
-{- called after game ends, determine winner -}
-tallyScores : GameState -> GameState
-tallyScores state =
-  let
-    scorers = Dict.foldl
-                (\k v acc -> ((v.victory + scoreCards (v.deck ++ v.hand ++ v.discard)), k) :: acc)
-                [] state.players
-
-    winners = List.sortWith (\(s1,p1) (s2,p2) -> compare s2 s1) scorers
-
-  in {state | winners = List.map (\(s,p) -> (p,s)) winners}
-
+logStateToServer : GameState -> Cmd Msg
+logStateToServer gs =
+    Task.perform
+        (\x -> NoOp)
+        -- TODO we should dump this to JSON instead.
+        SendToServer <| succeed <| toString gs
+                  
 {- Convenience wrapper for mucking with client's game state -}
-updateGameState : ClientState -> GameState -> ClientState
+{- TODO wrap this in something that deals with effects
+   (namely, submitting game states to the server) -}
+-- TODO have a pure sub-function for others to call?
+updateGameState : ClientState -> GameState -> (ClientState, Cmd Msg)
 updateGameState cs gs =
     case cs of
         {- note that we overwrite game ID to keep things consistent -}
-        ClientPlay cps -> ClientPlay {cps | gameId = gs.gameId
+        ClientPlay cps -> ( ClientPlay {cps | gameId = gs.gameId
                                           , gameState = gs}
+                          -- the following will cause
+                          -- game state to be sent over the wire
+                          , logStateToServer gs
+                          )
 
-        ClientSpectate css -> ClientSpectate {css | gameId = gs.gameId
-                                                  , gameState = Just gs}
+        ClientSpectate css -> ( ClientSpectate {css | gameId = gs.gameId
+                                                   , gameState = Just gs}
+                              , logStateToServer gs
+                              )
 
-        _ -> cs
+        _ -> (cs, Cmd.none)
       
 {- Respond to messages -}
 update : Msg -> ClientState -> (ClientState, Cmd Msg)
@@ -310,13 +336,15 @@ update msg state =
                 let startState =
                         case cst.rngInput of
                             Just rngIn ->
-                                {startingGameState | rng = rngIn}
+                                {startingGameState | rng = rngIn
+                                                   , gameId = gid
+                                }
                             Nothing ->
-                                startingGameState
+                                {startingGameState | gameId = gid}
                 in
                 ( ClientPlay
                        { gameId = gid
-                       , gameState = startingGameState
+                       , gameState = startState
                        , message = cst.message
                        },
                   Random.generate InitRandomAndDeal
@@ -337,6 +365,7 @@ update msg state =
 
     {- Checks to see if the RNG default value (bogus value) has not been
        clobbered yet. If it is still default we use the random one we just generated -}
+    {- I am concerned with how this interacts with logging -}
     (InitRandomAndDeal newRng, ClientPlay cp) ->
         let cp' =
                 if cp.gameState.rng == rngBogusValue
@@ -347,15 +376,10 @@ update msg state =
                 else
                     cp
         in
-            let cpUpdateGameState cp gSt =
-                    {cp | gameState = gSt}
-            in
-                (cp' |> (\cp -> cp.gameState)
-                      |> initialDeal |> updateGameState (ClientPlay cp'),
-                          Cmd.none
-                         )
-
-    {- TODO: Make sure all state updates go through a single
+            cp' |> (\cp -> cp.gameState)
+                |> initialDeal |> updateGameState (ClientPlay cp')
+            
+  {- TODO: Make sure all state updates go through a single
        function/message to make sure all get logged for spectator mode
      -}
     (UpdateClientState cst, _) ->
@@ -394,8 +418,7 @@ update msg state =
                                   gst.players}
                   in
                       -- TODO I am concerned this has the wrong precedence (elsewhere too)
-                      (gst' |> updateGameState state
-                      , Cmd.none)
+                      gst' |> updateGameState state
 
                   else (state, Cmd.none)
                       
@@ -411,7 +434,7 @@ update msg state =
                                      gst.players
                          }
                      
-                in (gst' |> updateGameState state, Cmd.none)
+                in gst' |> updateGameState state
                     
         {- not the right time to play a card -}
         _ -> (state, Cmd.none)
@@ -451,9 +474,9 @@ update msg state =
                                                   , hand = []})
                                          gst'.players
                             } in
-              (tallyScores gst'' |> updateGameState state, Cmd.none)
+              {- tallyScores -} gst'' |> updateGameState state
 
-            else (gst' |> updateGameState state, Cmd.none)
+            else gst' |> updateGameState state
 
           else (state, Cmd.none)
 
@@ -466,8 +489,8 @@ update msg state =
         player = dflGet pId gst.players dummy
       in
       case gst.phase of
-        ActionPhase -> ({gst | phase = CoinPhase} |> updateGameState state, Cmd.none)
-        CoinPhase -> ({gst | phase = BuyPhase} |> updateGameState state, Cmd.none)
+        ActionPhase -> {gst | phase = CoinPhase} |> updateGameState state
+        CoinPhase -> {gst | phase = BuyPhase} |> updateGameState state
         BuyPhase ->
           {- first, add buys and plays back into discard pile, and reset resource values -}
           let gst' = {gst     | players = update' pId
@@ -483,7 +506,7 @@ update msg state =
                               , phase = ActionPhase
                        }
           in
-          (gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateGameState state, Cmd.none)
+          gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateGameState state
 
         _ -> (state, Cmd.none)
 
@@ -495,7 +518,15 @@ update msg state =
         (ClientPlay {cps | message = Just msg}, Cmd.none)
 
     (GotServerMsg msg, ClientSpectate css) ->
-        (ClientSpectate {css | message = Just msg}, Cmd.none)
+        (ClientSpectate
+             -- attempt to parse the string as a game state
+             -- TODO make this JSON
+             {css | message = Just msg},
+             Cmd.none)
+
+     -- send a message to the server
+    (SendToServer str, state) ->
+        (state, toServer str)
 
 -- not implementd yet
 --    (GotServerMsg msg, ClientSpectate cs) ->
