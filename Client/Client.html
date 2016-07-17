@@ -11,13 +11,12 @@
       // ports send and receive strings representing the command
       // i think in this architecture client must always initiate communication
       app.ports.toServer.subscribe(function(str){
-        console.log('trying to send');
+        console.log('trying to send ' + str);
         socket.emit('response',str);
       });
 
       socket.on('game', function(msg){
 	console.log('message! ' + msg);
-        socket.emit('response', "aaa");
         app.ports.fromServer.send(msg);
       });
     </script>

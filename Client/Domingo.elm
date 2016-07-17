@@ -7,6 +7,8 @@ import List
 import Random
 import Task exposing (succeed)
 import String exposing (toInt)
+import Json.Decode as Decode
+import Json.Encode as Encode
 
 {- import the rest of Domingo -}
 import DomingoModel exposing (..)
@@ -279,12 +281,17 @@ scoreCards l =
               let c = dflGet cId allCards urCard in
               c.victory + i) 0 l
 
-logStateToServer : GameState -> Cmd Msg
-logStateToServer gs =
+sendStateToServer : GameState -> Cmd Msg
+sendStateToServer gs =
+    let
+        output =
+            succeed <| Encode.encode 0 <|
+                clientToServerMsgEncoder <|
+                    UpdateGameCMsg gs.gameId gs
+    in
     Task.perform
         (\x -> NoOp)
-        -- TODO we should dump this to JSON instead.
-        SendToServer <| succeed <| toString gs
+        SendToServer output
                   
 {- Convenience wrapper for mucking with client's game state -}
 {- TODO wrap this in something that deals with effects
@@ -298,12 +305,12 @@ updateGameState cs gs =
                                           , gameState = gs}
                           -- the following will cause
                           -- game state to be sent over the wire
-                          , logStateToServer gs
+                          , sendStateToServer gs
                           )
 
         ClientSpectate css -> ( ClientSpectate {css | gameId = gs.gameId
                                                    , gameState = Just gs}
-                              , logStateToServer gs
+                              , Cmd.none
                               )
 
         _ -> (cs, Cmd.none)
@@ -327,10 +334,11 @@ update msg state =
             Ok seed -> (ClientPreGame {cst | rngInput = Just seed}, Cmd.none)
             Err _ -> (ClientPreGame cst, Cmd.none)
 
+    -- TODO make this send a message to server
     (StartGame, ClientPreGame cst) ->
         -- we can only start if game id is filled in
         -- if the rng is not filled in,
-        -- InitRandomAndDeal will take care of it                                
+        -- InitRandomAndDeal will take care of it                              
         case cst.gidInput of
             Just gid ->
                 let startState =
@@ -347,16 +355,24 @@ update msg state =
                        , gameState = startState
                        , message = cst.message
                        },
-                  Random.generate InitRandomAndDeal
+                  Random.generate FinishStartingGame
                       (Random.int Random.minInt Random.maxInt))
                     
             Nothing -> (state, Cmd.none)
-                   
+
     (SpectateGame, ClientPreGame cst) ->
         case cst.gidInput of
-            Just gid -> ( ClientSpectate { gameId = gid
+            Just gid ->
+                let output =
+                        succeed <| Encode.encode 0 <|
+                            clientToServerMsgEncoder <|
+                                SpectateGameCMsg gid
+                in
+                ( ClientSpectate { gameId = gid
                                          , gameState = Nothing
-                                         , message = cst.message }, Cmd.none)
+                                         , message = cst.message }
+                , Task.perform (\x -> NoOp) SendToServer output
+                )
             Nothing -> (state, Cmd.none)
 
     {- TODO: let server/other clients know we quit? -}
@@ -366,7 +382,7 @@ update msg state =
     {- Checks to see if the RNG default value (bogus value) has not been
        clobbered yet. If it is still default we use the random one we just generated -}
     {- I am concerned with how this interacts with logging -}
-    (InitRandomAndDeal newRng, ClientPlay cp) ->
+    (FinishStartingGame newRng, ClientPlay cp) ->
         let cp' =
                 if cp.gameState.rng == rngBogusValue
                 then
@@ -377,7 +393,8 @@ update msg state =
                     cp
         in
             cp' |> (\cp -> cp.gameState)
-                |> initialDeal |> updateGameState (ClientPlay cp')
+                |> initialDeal |>
+                   updateGameState (ClientPlay cp')
             
   {- TODO: Make sure all state updates go through a single
        function/message to make sure all get logged for spectator mode
@@ -511,26 +528,39 @@ update msg state =
         _ -> (state, Cmd.none)
 
     -- handle asynchronous server messages
-    (GotServerMsg msg, ClientPreGame cpgs) ->
-        (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
+    (GotServerMsg msg, _) ->
+        -- see if we are getting them this far
+        let decodedResult = Debug.log "got here!!!" <| parseServerToClientMessage msg in
+        case decodedResult of
+            Ok decoded ->
+                case decoded of
+                    UpdateGameSMsg gs msg ->
+                        -- TODO add a way to acknowledge you got message
+                        case state of
+                            -- only perform the update if we are a spectator
+                            ClientSpectate css ->
+                                let newGameState =
+                                        -- check to make sure the game ID is correct
+                                        if css.gameId == gs.gameId
+                                        then Just gs
+                                        else css.gameState
+                                in
+                                ((ClientSpectate {css | gameState = newGameState
+                                                      , message = Just msg
+                                                 }), Cmd.none) 
 
-    (GotServerMsg msg, ClientPlay cps) ->
-        (ClientPlay {cps | message = Just msg}, Cmd.none)
+                            ClientPreGame cpgs -> (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
+                            ClientPlay cps -> (ClientPlay {cps | message = Just msg}, Cmd.none)
 
-    (GotServerMsg msg, ClientSpectate css) ->
-        (ClientSpectate
-             -- attempt to parse the string as a game state
-             -- TODO make this JSON
-             {css | message = Just msg},
-             Cmd.none)
-
+                    -- is this a message type we don't understand?
+                    _ -> (state, Cmd.none)
+            -- did we fail to even parse it?
+            _ -> (state, Cmd.none)
+        
      -- send a message to the server
+     -- this should do a real command!
     (SendToServer str, state) ->
         (state, toServer str)
-
--- not implementd yet
---    (GotServerMsg msg, ClientSpectate cs) ->
---      ({gst | message})
 
     _ -> (state, Cmd.none)
 

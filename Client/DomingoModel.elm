@@ -173,7 +173,7 @@ type Msg =  SendToServer String
           | EndBuy
           {- message sent when new random seed is generated -}
           -- gets randomness if the user did not provide it, and deals initial hand
-          | InitRandomAndDeal Int
+          | FinishStartingGame Int
           {- if a task fails - should be a no op, possibly log error -}
           | TaskFail String
           {- general call to update client's state -}
@@ -184,7 +184,7 @@ type Msg =  SendToServer String
 {- Type for messages sent from client to server -}
 type ClientToServerMsg =
        StartGameCMsg GameId
-     | SpectateCMsg GameId
+     | SpectateGameCMsg GameId
      | UpdateGameCMsg GameId GameState
 
 {- Serialization code -}
@@ -193,20 +193,18 @@ clientToServerMsgEncoder : ClientToServerMsg -> Value
 clientToServerMsgEncoder msg =
     case msg of
         StartGameCMsg id -> Encode.object [ ("msgType", Encode.string "start")
-                                          , ("gId", Encode.string id)]
-        SpectateCMsg id -> Encode.object [ ("msgType", Encode.string "spectate")
-                                         , ("gId", Encode.string id)]
+                                          , ("gameId", Encode.string id)]
+        SpectateGameCMsg id -> Encode.object [ ("msgType", Encode.string "spectate")
+                                         , ("gameId", Encode.string id)]
         UpdateGameCMsg gid gst ->
                 Encode.object [ ("msgType", Encode.string "update")
-                              , ("gId", Encode.string gid)
-                              -- TODO need a function to convert game states to values
+                              , ("gameId", Encode.string gid)
                               , ("gameState", gameStateEncoder gst) ]
                            
 {- Responses from server -}
 -- TODO give this a more reasonable name.
-type ServerToClientMsg =
-    -- AcknowledgeSMsg
-     UpdateGameSMsg GameId GameState
+type ServerToClientMsg = UpdateGameSMsg GameState String
+                       | UnknownSMsg -- used in event of parse failure
 
 {- JSON decoder for game states -}
 -- it would be better to put all these in a sub-module called decoders
@@ -288,24 +286,26 @@ gameStateEncoder gs =
                   , ("buys", Encode.int gs.buys)
                   , ("purchases", Encode.list (List.map Encode.int gs.purchases))
                   , ("plays", Encode.list (List.map Encode.int gs.plays))
+                  , ("phase", gamePhaseEncoder gs.phase)
                   , ("rng", Encode.int gs.rng)
---                  , ("winners", Encode.list (List.map Encode.int gs.winners))
                   , ("gameId", Encode.string gs.gameId)
                   ]
 
--- TODO can we just use the value decoder and skip all this?
--- gamePhaseDecoder           
-
 {- JSON decoder for server messages -}
-serverMsgDecoder : Decoder ServerToClientMsg
-serverMsgDecoder =
+serverToClientMsgDecoder : Decoder ServerToClientMsg
+serverToClientMsgDecoder =
     -- check based on type, to see what you need
-    -- object1 is not what we want here
-    object2 UpdateGameSMsg
-        -- TODO check to ensure it is the right type
-        ("gameId" := string)
-        ("gameState" := gameStateDecoder)
+    andThen ("msgType" := string)
+        (\s -> case s of
+                   "updateGameState" ->
+                           object2 UpdateGameSMsg
+                               ("gameState" := gameStateDecoder)
+                               ("message" := string)
+                   
+                   _ -> succeed UnknownSMsg
+        )
+    
                    
 {- deserialization code -}
 parseServerToClientMessage msg =
-    decodeString serverMsgDecoder msg
+    decodeString serverToClientMsgDecoder msg

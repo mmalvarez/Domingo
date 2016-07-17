@@ -20,38 +20,43 @@ io.on('connection', function(socket){
     //add this socket to list of clients, for later use
     //connection will not be ready yet, until
     //they tell us their game ID and whether they are spectating
-    clients[socket.id] = {gameId = null; master = false; socket = socket; ready = false}
+    clients[socket.id] = {gameId : null, master : false, socket : socket, ready : false}
 
     socket.on('response', function(msg){
-        console.log('message: ' + msg);
+        console.log('got message: ' + msg);
 
         // parse the submitted game state to get the type and ID
         var parsedMsg = {};
-        try {gameState = JSON.parse(parsedMsg)}
+        try {parsedMsg = JSON.parse(msg)}
         catch (err) {
             console.log("parse failure...");
+            console.log("Result is " + parsedMsg);
         }
 
         // handle spectator registration
-        if (parsedMsg.type === "spectate") {
-            gId = parsedMsg.gameId
-            clients[socket.id] =  {gId, false, socket, true}
+        if (parsedMsg.msgType === "spectate") {
+            gId = parsedMsg.gameId;
+            console.log("registering spectator on game " + gId);
+            clients[socket.id] =  {gameId : gId, master : false, socket : socket, ready : true};
         }
         // handle player registration
-        else if (parsedMsg.type === "start") {
-            gId = parsedMsg.gameId
-            clients[socket.id] = {gId, true, socket, true}
-        }
+        // todo, START messages should actually be a thing at some point
+/*        else if (parsedMsg.msgType === "start") {
+            console.log("STARTING A GAME");
+            gId = parsedMsg.gameId;
+            clients[socket.id] = {gameId : gId, master : true, socket : socket, ready : true};
+        } */
         // updated game state, to be forwarded to spectators
-        else if (parsedMsg.type === "update") {
-            var gameState = parsedMsg.gameState
+        else if (parsedMsg.msgType === "update") {
+            var gameState = parsedMsg.gameState;
             // forward the game state to all interested clients
             for (socketId in clients) {
                 if (!clients[socketId].master && clients[socketId].ready &&
                     clients[socketId].gameId === parsedMsg.gameId)
                 {
-                    socket = clients[socketId].socket
-                    socket.send (JSON.stringify({msgType = "updateGameState", gameState = gameState}))
+                    console.log("FORDWARDING TO INTERESTED CLIENTS");
+                    socket = clients[socketId].socket;
+                    socket.emit ('game', JSON.stringify({msgType : "updateGameState", gameState : gameState, message : "hello, world"}));
                 }
             }
         }
