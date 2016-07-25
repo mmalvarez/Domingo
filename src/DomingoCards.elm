@@ -3,7 +3,7 @@ module DomingoCards exposing(..)
 import Dict
 import Random
 import DomingoModel exposing (..)
-import DomingoActions exposing(..)
+import DomingoCardPrimitives exposing(..)
 
 {- Card definitions for the Domingo game. -}
 

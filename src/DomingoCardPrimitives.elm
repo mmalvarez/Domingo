@@ -1,8 +1,11 @@
-{- separate file for actions that cards can use -}
-
-module DomingoActions exposing(..)
+{- Implementation of primitives such as shuffling a deck,
+   picking cards, etc.
+   TODO give this a better name.
+ -}
+module DomingoCardPrimitives exposing(..)
 
 import DomingoModel exposing(..)
+import DomingoLib exposing(..)
 import Dict
 import Random
 import Task exposing(succeed)
@@ -49,40 +52,8 @@ shuffle : List CardId -> Int -> List CardId
 shuffle l iSeed =
   fst <| shuffle' l (Random.initialSeed iSeed)
 
-{- variant of head that works with default values -}
-dflHead : List a -> a -> a
-dflHead l d = case l of
-              h :: t -> h
 
-              _ -> d
 
-{- variant of tail that swallows errors -}
-dflTail : List a -> List a
-dflTail l =
-  case l of
-    [] -> []
-    h :: t -> t
-
-{- dummy player for use with the next function -}
-dummyId : PlayerId
-dummyId = -1
-
-dummy : PlayerState
-dummy =
-  { deck = []
-  , discard = []
-  , hand = []
-  , victory = 0
-  , valid = False
-  }
-
-{- TODO use IDs below, not states -}
-
-{- similar for get ? -}
-dflGet : comparable -> Dict.Dict comparable b -> b -> b
-dflGet p d default = case Dict.get p d of
-                      Just r -> r
-                      Nothing -> default
 
 {- run tasks on a client state -}
 doClientTask : ClientTask -> Cmd Msg
@@ -180,26 +151,15 @@ initialDeal st =
 
     else st
 
-{- get nth item in list -}
-dflNth : Int -> List a -> a -> a
-dflNth n l default =
-  case l of
-    [] -> default
-
-    h :: t ->
-      if n == 0 then h
-      else dflNth (n-1) t default
-
-{- drop nth item from list, or do nothing if list is too short -}
-dflDropNth : Int -> List a -> List a
-dflDropNth n l =
-  case l of
-    [] -> []
-
-    h :: t ->
-      if n == 0 then t
-      else h :: dflDropNth (n-1) t
-
+{- sum how many victory points a list of cards is worth 
+   should be passed the list of cards to check (allCards); this is to
+   break the dependency on DomingoCards
+-}
+scoreCards : List CardId -> Dict.Dict CardId Card -> Int
+scoreCards l all =
+  List.foldl (\cId i ->
+              let c = dflGet cId all urCard in
+              c.victory + i) 0 l        
 
 {- dummy card used for lookups that the compiler thinks could fail -}
 urId = -1

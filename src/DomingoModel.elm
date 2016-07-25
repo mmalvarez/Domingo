@@ -23,8 +23,22 @@ type alias PlayerState =
     , victory : Int {- Extra VP earned from e.g. actions -}
     , valid : Bool
     }
-    -- our implementation of Json.extras.apply
-    -- for encoding objects of arbitrary arity
+
+{- dummy player for use with the next function -}
+dummyId : PlayerId
+dummyId = -1
+
+dummy : PlayerState
+dummy =
+  { deck = []
+  , discard = []
+  , hand = []
+  , victory = 0
+  , valid = False
+  }
+    
+-- our implementation of Json.extras.apply
+-- for encoding objects of arbitrary arity
 -- usually the Decoder a will be ("var" := val)
 (|:) : Decoder (a -> b) -> Decoder a -> Decoder b
 (|:) df da =
