@@ -116,7 +116,7 @@ dealPlayerCards p n st =
 {- deal a card to current player (at front of rotation) -}
 dealCurrentPlayerCards : Int -> GameState -> GameState
 dealCurrentPlayerCards n st =
-  let current = dflHead st.playerOrder -1 in
+  let current = dflHead st.playerOrder dummyId in
   dealPlayerCards current n st
 
 rotatePlayers : GameState -> GameState
@@ -127,7 +127,7 @@ initialDeal : GameState -> GameState
 initialDeal st =
     {- check if player 1 has a hand -}
     let
-      nextId = (dflHead st.playerOrder -1)
+      nextId = (dflHead st.playerOrder dummyId)
 
       nextPlayer = dflGet nextId st.players dummy
     in

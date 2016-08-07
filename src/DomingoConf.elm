@@ -40,8 +40,8 @@ rngBogusValue = 0
 
 startingGameState : GameState
 startingGameState =
-  { players = Dict.fromList [(0, startingPlayerState), (1, startingPlayerState)]
-  , playerOrder = [0,1]
+  { players = Dict.fromList [(dummyId, startingPlayerState)]
+  , playerOrder = [dummyId]
   , shop = Dict.fromList [(estateId, estateHowMany), (copperId, copperHowMany),
                           (woodcutterId, woodcutterHowMany), (villageId, villageHowMany)]
   , trash = []

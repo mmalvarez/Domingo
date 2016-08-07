@@ -7,10 +7,9 @@ import List
 import String
 import Json.Encode as Encode
 import Json.Decode as Decode exposing(..)
--- this no longer seems to exist
--- import Json.Decode.Extra exposing((|:))
+import DomingoLib exposing (..)
 
-type alias PlayerId = Int
+type alias PlayerId = String
 type alias CardId = Int
 type alias GameId = String
 
@@ -26,7 +25,8 @@ type alias PlayerState =
 
 {- dummy player for use with the next function -}
 dummyId : PlayerId
-dummyId = -1
+-- dear lord this is bad please fix
+dummyId = "NOTREAL"
 
 dummy : PlayerState
 dummy =
@@ -37,13 +37,6 @@ dummy =
   , valid = False
   }
     
--- our implementation of Json.extras.apply
--- for encoding objects of arbitrary arity
--- usually the Decoder a will be ("var" := val)
-(|:) : Decoder (a -> b) -> Decoder a -> Decoder b
-(|:) df da =
-    -- want to "take out" a -> b, and map it into
-    df `andThen` \g -> map g da
 
 playerStateDecoder : Decoder PlayerState
 playerStateDecoder =
@@ -148,7 +141,8 @@ type alias ClientTask = Task.Task String ClientState
 -- TODO should these also have constructors?
 type alias ClientPreGameState =
   { gidInput : Maybe GameId
-  , rngInput : Maybe Int
+  , pidInput : List PlayerId -- List to support multiplayer on same client. If empty we are a spectator
+  , isMasterInput : Bool
   , message : Maybe String }
 
 type alias ClientPlayState =
@@ -162,38 +156,72 @@ type alias ClientSpectateState =
   , gameState : Maybe GameState {- Nothing if the server hasn't sent us a message -}
   , message : Maybe String }
 
+-- describe what type of lobby this is (play or spectate)
+type LobbyType = LobbyPlay
+               | LobbySpectate
+
+-- config options specific to the master                 
+type alias ClientLobbyConfigState =
+    { rngInput : Maybe Int
+    -- TODO other config options, like cards
+    -- we also need to include a way to kick/restrict access
+    }
+        
+-- TODO: include information such as
+-- how many people are connected, is host connected, etc
+type alias ClientLobbyState =
+    { gameId : GameId
+    , playerIds : List PlayerId
+    -- we probably don't need this as playerIds = [] in this case
+--    , lobbyType : LobbyType
+    -- am I master? if so, what is config state
+    , masterConfigState : Maybe ClientLobbyConfigState
+    -- has the "host" connected?
+    , masterConnected : Bool
+    -- what players (incl master) there are.
+    -- bool is whether that player is master
+    , playersConnected : List (PlayerId, Bool)
+    , message : Maybe String
+    }
+
 type ClientState =
        ClientPreGame ClientPreGameState
+     | ClientLobby ClientLobbyState
      | ClientPlay ClientPlayState
      | ClientSpectate ClientSpectateState
 
 {- Messages used by main app -}
-type Msg =  SendToServer String
+type Msg =
+          {- communications -}
+            SendToServer String
           | GotServerMsg String
           {- for debugging -}
           | ShowState
-          {- useful ones -}
-          {- need ones for manually/automatically setting RNG -}
-          | UpdateGameId String
-          | UpdateSeedToUse String
-          -- in pregame state, update seed to use in game
+          {- pregame. -}
+          | UpdateGameId GameId
+          | UpdateIsMaster Bool
+          | UpdateNewPlayer PlayerId            
+          | AddNewPlayer
+          | RemovePlayer PlayerId
+          | StartLobby -- True if we are spectator
+          {- lobby -}
+          | UpdateMasterSeed String
           | StartGame
-          | SpectateGame
---        | QuitGame
-          | RestartClient
+          {- in game -}
           | PlayCard Int
           | EndPhase
           | BuyCard CardId
           | EndBuy
-          {- message sent when new random seed is generated -}
-          -- gets randomness if the user did not provide it, and deals initial hand
+          {- miscellaenous -}
+          {- message sent when new random seed is generated 
+             gets randomness if the user did not provide it, and deals initial hand -}
           | FinishStartingGame Int
-          {- if a task fails - should be a no op, possibly log error -}
+          {- if a task fails - should be a no op, possibly log error. not sure if i even use this... -}
           | TaskFail String
-          {- general call to update client's state -}
+          {- general call to update client's state, and send it to the server (todo: rename; this is a master-only thing) -}
           | UpdateClientState ClientState
-          -- send a message to the server
           | NoOp -- should never be responded to
+          | RestartClient -- TODO remove this one
 
 {- Type for messages sent from client to server -}
 type ClientToServerMsg =
@@ -271,8 +299,8 @@ shopEncoder d =
 gameStateDecoder : Decoder GameState
 gameStateDecoder =
     (succeed GameState)
-        |: ("players" := dict playerStateDecoder |> Decode.map dictKeysMap)
-        |: ("playerOrder" := list int)
+        |: ("players" := dict playerStateDecoder {- |> Decode.map dictKeysMap -})
+        |: ("playerOrder" := list string)
         |: ("shop" := shopDecoder)
         |: ("trash" := list int)
         |: ("actions" := int)
@@ -292,7 +320,7 @@ playersEncoder d =
 gameStateEncoder : GameState -> Value
 gameStateEncoder gs =
     Encode.object [ ("players", playersEncoder gs.players)
-                  , ("playerOrder", Encode.list (List.map Encode.int gs.playerOrder))
+                  , ("playerOrder", Encode.list (List.map Encode.string gs.playerOrder))
                   , ("shop", shopEncoder gs.shop)
                   , ("trash", Encode.list (List.map Encode.int gs.trash))
                   , ("actions", Encode.int gs.actions)

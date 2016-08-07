@@ -8,10 +8,11 @@ import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing(..)
 import Dict
+import String
 
 
 {- button generators -}
- {- for buttons on hand cards -}
+{- for buttons on hand cards -}
 buttonGenHand pos =
   [tr [] [], button [ onClick (PlayCard pos) ] [ text ({-(toString pos) ++ -}" play") ]]
 
@@ -103,25 +104,82 @@ displayGameState gameState isSpectator =
                                      ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
                          ]
     in output
-        
-                              
+
+-- next, we need to be able to display connected players.
+-- also we need to add a new message type for "am i master"
+
+displayPlayerIdInputs cpgs =
+    div [] <|
+        (List.concatMap (\pId ->
+                             [ text pId
+                             , button [onClick (RemovePlayer pId)] [text "-"]
+                             , br [] []
+                             ]
+                        ) cpgs.pidInput) ++
+          [ br [] [], br [] []
+          , input [onInput UpdateNewPlayer, placeholder "Name of new player"] []
+          , button [onClick AddNewPlayer] [text "+"]
+          ]
+
+displayPlayersConnected connected =
+    div [] <| List.concatMap (\(pId, isMaster) ->
+                                  [ text (pId ++ (if isMaster then " *master" else ""))
+                                  , br [] []
+                                  ]
+                             ) connected
+
+-- display button to start game if you are master
+-- display game config options if you are master
+displayMasterOptions clcState =
+    div []
+        [ button [onClick StartGame] [text "start game"], br [] []
+        , input [onInput UpdateMasterSeed, placeholder "Optional seed; randomly generated if empty"] []
+        ]
+
 -- display the main div
 displayMainDiv clientState =
     case clientState of
-        ClientPreGame _ ->
+        ClientPreGame cpgs ->
             div []
                 [ h1 [] [text "Domingo"]
-                -- buttons
+                , text "Who's playing? (If no players, you are a specator)", br [] []
+                , displayPlayerIdInputs cpgs, br [] [], br [] []
+                , text "Are you hosting? (Exactly 1 computer per game must.) ",
+                    -- TODO i am unsure if "checkbox" is a valid type in elm's html system
+                    input [type' "checkbox"
+                          , onInput (\s -> if (String.toLower s) == "true"
+                                           then UpdateIsMaster True
+                                           else UpdateIsMaster False)] [], br [] []
                 , input [onInput UpdateGameId, placeholder "Game ID"] []
                 , br [] []
-                , input [onInput UpdateSeedToUse, placeholder "Optional Seed; Randomly Generated if Empty"] []
-                , br [] []
-                , button [onClick StartGame]  [text "start game"]
-                , br [] []
-                , button [onClick SpectateGame] [text "spectate game"]
+                , button [onClick StartLobby]  [text "start game lobby"]
                 , br [] []
                 , button [ onClick RestartClient ]  [ text "restart client" ]
                 ]
+
+        ClientLobby cglState ->
+            let pidText =
+                    case cglState.playerIds of
+                        [] -> "a spectator"
+                        p1 :: ps -> "player " ++ p1
+            in
+            div [] <|
+                [ h2 [] [text <|
+                             "Waiting for friends. You are " ++ pidText ++
+                             " and this is game " ++ cglState.gameId ++ " and you are" ++
+                             (case cglState.masterConfigState of
+                                  Just _ -> ""
+                                  Nothing -> " not") ++ " the master."]
+                , br [] [], br [] []
+                -- TODO make sure "master has connected?" doesn't get out of sync with the players list
+                , text ("Master has" ++ (if cglState.masterConnected then "" else " not") ++ "connected."), br [] []
+                , text "Players connected: ", br [] []
+                , displayPlayersConnected cglState.playersConnected
+                , br [] [], br [] []
+                ] ++
+                (case cglState.masterConfigState of
+                     Just clc -> [displayMasterOptions clc]
+                     Nothing -> [])
 
         ClientPlay cpState ->
             div []
@@ -150,9 +208,11 @@ displayClientOptions clientState =
             (case clientState of
                  ClientPreGame cpg -> cpg.message
                  
-                 ClientPlay cpg -> cpg.message
+                 ClientPlay cp -> cp.message
+
+                 ClientLobby cl -> cl.message
                                                            
-                 ClientSpectate cpg -> cpg.message
+                 ClientSpectate cs -> cs.message
             ) of
                 
             Nothing -> "message:"
@@ -164,7 +224,7 @@ displayClientOptions clientState =
         , text ("Most recent server message: " ++ message)
         , br [] []
         , button [ onClick ShowState ] [ text "show client state in console" ]
-        -- TODO: eventually add a server maintenance button here?
+        -- TODO: eventually add a server maintenance button here? or somewhere
         ]
             
 displayClientState clientState =

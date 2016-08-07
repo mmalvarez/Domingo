@@ -30,7 +30,8 @@ import DomingoConf exposing(..)
 startingClientState : ClientState
 startingClientState = ClientPreGame
   { gidInput = Nothing
-  , rngInput = Nothing
+  , pidInput = []
+  , isMasterInput = False
   , message = Nothing
   }
 
@@ -88,21 +89,63 @@ update msg state =
     (UpdateGameId gId, ClientPreGame cst) ->
         (ClientPreGame {cst | gidInput = Just gId}, Cmd.none)
 
-    -- no-op if
+    {- pregame -}
     -- TODO this will cause issues with text box contents being out of sync
     -- let's fix this later
-    (UpdateSeedToUse seedStr, ClientPreGame cst) ->
+    -- also, move this down to the other actions
+    (UpdateMasterSeed seedStr, ClientLobby clst) ->
         case (toInt seedStr) of
-            Ok seed -> (ClientPreGame {cst | rngInput = Just seed}, Cmd.none)
-            Err _ -> (ClientPreGame cst, Cmd.none)
+            Ok seed -> case clst.masterConfigState of
+                           Nothing -> (ClientLobby clst, Cmd.none)
+                           Just clcst -> (ClientLobby {clst | masterConfigState =
+                                                           Just {clcst | rngInput = Just seed}}, Cmd.none)
+            Err _ -> (ClientLobby clst, Cmd.none)
+
+    (StartLobby, ClientPreGame cpst) ->
+        -- they need to provide us with a game id
+        case cpst.gidInput of
+            Just gid ->
+                -- if we are master, create a "master-input" state
+                let clcst =
+                        case cpst.isMasterInput of
+                            False -> Nothing
+                            True -> Just {rngInput = Nothing}
+                                
+                in
+                let clst =
+                        { gameId = gid
+                        , playerIds = cpst.pidInput
+                        , masterConfigState = clcst
+                        -- if we are master, master has connected. else, no
+                        , masterConnected = cpst.isMasterInput
+                        -- TODO: is this the right semantics?
+                        -- or do we wait for an acknowledgement
+                        , playersConnected =
+                            case cpst.pidInput of
+                                [] -> []
+                                -- first player in list is master, if "we" are master
+                                p1 :: ps ->
+                                    case cpst.isMasterInput of
+                                        True ->
+                                            (p1, True) :: List.map (\p -> (p, False)) ps
+                                        False ->
+                                            List.map (\p -> (p, False)) cpst.pidInput
+                        , message = cpst.message
+                        }
+                in
+                    (ClientLobby clst, Cmd.none)
+                        
+            Nothing -> (ClientPreGame cpst, Cmd.none)
 
     -- TODO make this send a message to server
+    -- TODO this needs to apply to the lobby state now
     (StartGame, ClientPreGame cst) ->
         -- we can only start if game id is filled in
         -- if the rng is not filled in,
         -- InitRandomAndDeal will take care of it                              
         case cst.gidInput of
             Just gid ->
+                {-
                 let startState =
                         case cst.rngInput of
                             Just rngIn ->
@@ -112,9 +155,10 @@ update msg state =
                             Nothing ->
                                 {startingGameState | gameId = gid}
                 in
+                 -}
                 ( ClientPlay
                        { gameId = gid
-                       , gameState = startState
+                       , gameState = startingGameState
                        , message = cst.message
                        },
                   Random.generate FinishStartingGame
@@ -122,6 +166,7 @@ update msg state =
                     
             Nothing -> (state, Cmd.none)
 
+{-                       
     (SpectateGame, ClientPreGame cst) ->
         case cst.gidInput of
             Just gid ->
@@ -136,6 +181,7 @@ update msg state =
                 , Task.perform (\x -> NoOp) SendToServer output
                 )
             Nothing -> (state, Cmd.none)
+-}
 
     {- TODO: let server/other clients know we quit? -}
     (RestartClient, _) ->
@@ -169,11 +215,11 @@ update msg state =
       let
         gst = cp.gameState
           
-        pId = dflHead gst.playerOrder urId
+        pId = dflHead gst.playerOrder dummyId
 
         player = dflGet pId gst.players dummy
 
-        cId = dflNth pos player.hand -1
+        cId = dflNth pos player.hand urId
 
         card = dflGet cId allCards urCard
 
@@ -223,7 +269,7 @@ update msg state =
       let
         gst = cp.gameState
           
-        pId = dflHead gst.playerOrder urId
+        pId = dflHead gst.playerOrder dummyId
 
         player = dflGet pId gst.players dummy
 
@@ -264,7 +310,7 @@ update msg state =
     (EndPhase, ClientPlay cp) ->
       let
         gst = cp.gameState
-        pId = dflHead gst.playerOrder urId
+        pId = dflHead gst.playerOrder dummyId
         player = dflGet pId gst.players dummy
       in
       case gst.phase of
@@ -313,6 +359,7 @@ update msg state =
 
                             ClientPreGame cpgs -> (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
                             ClientPlay cps -> (ClientPlay {cps | message = Just msg}, Cmd.none)
+                            ClientLobby cls -> (ClientLobby {cls | message = Just msg}, Cmd.none)
 
                     -- is this a message type we don't understand?
                     _ -> (state, Cmd.none)
