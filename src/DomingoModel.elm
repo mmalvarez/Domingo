@@ -69,18 +69,19 @@ type GamePhase = PreGamePhase
 
 -- not sure if this is strictly necessary, but i want to
 -- not depend on details of how the language does default printing
+-- TODO be robust to nonsense packets, rather than default-valuing
+-- TODO just use Decoder.fail, I think
+-- we need an AndThen
 gamePhaseDecoder : Decoder GamePhase
 gamePhaseDecoder =
-    Decode.int |> Decode.map (\i ->
-                                    case i of
-                                        0 -> PreGamePhase
-                                        1 -> DealPhase
-                                        2 -> ActionPhase
-                                        3 -> CoinPhase
-                                        4 -> BuyPhase
-                                        5 -> EndGamePhase
-                                        _ -> PreGamePhase --shouldn't happen
-                               )
+    Decode.int `andThen` \i -> case i of
+                                        0 -> succeed PreGamePhase
+                                        1 -> succeed DealPhase
+                                        2 -> succeed ActionPhase
+                                        3 -> succeed CoinPhase
+                                        4 -> succeed BuyPhase
+                                        5 -> succeed EndGamePhase
+                                        _ -> fail "invalid game phase"
                             
 gamePhaseEncoder : GamePhase -> Value
 gamePhaseEncoder gp =
@@ -110,12 +111,32 @@ type alias Card =
     {- to do: some way of specifying reactions when it's on the field -}
     }
 
+{- Describes additional choices the current player sometimes must take -}
+{- Eventually this will have "pick card from list" etc -}
+type GamePrompt = NoPrompt -- "normal" state, no prompt
+                | AcceptDecline -- for "may" effects
+
+gamePromptDecoder : Decoder GamePrompt
+gamePromptDecoder =
+    Decode.int `andThen` \i -> case i of
+                                        0 -> succeed NoPrompt
+                                        1 -> succeed AcceptDecline
+                                        _ -> fail "invalid prompt type"
+                  
+gamePromptEncoder : GamePrompt -> Value
+gamePromptEncoder gp =
+    Encode.int <|
+        case gp of
+            NoPrompt -> 0
+            AcceptDecline -> 1
+
 {- State of a Domingo game in progress.
    This (eventually, deltas to it) are what get serialized over
    the wire and sent to clients
 -}
 type alias GameState =
-    { players : Dict.Dict PlayerId PlayerState
+    { gameId : GameId
+    , players : Dict.Dict PlayerId PlayerState
     , playerOrder : List PlayerId
     , shop : Dict.Dict CardId Int
     , trash : List CardId
@@ -125,13 +146,9 @@ type alias GameState =
     , buys : Int
     , purchases : List CardId {- cards purchased that will enter player's discard at end of turn -}
     , plays : List CardId {- cards played this turn that will enter player's discard at end of turn -}
-    , phase : GamePhase {- NB this used to be conflated with client state -}
+    , phase : GamePhase
     , rng : Int
-    {- used at end of game to display how well people did
-    in number of victory points -}
--- winners isn't part of the state but rather calculated from it    
---    , winners : List (PlayerId, Int)
-    , gameId : GameId
+    , prompt : GamePrompt -- if the current player must take some kind of special action
     }
 
 {- For chaining client actions -}
@@ -141,22 +158,12 @@ type alias ClientTask = Task.Task String ClientState
 -- TODO should these also have constructors?
 type alias ClientPreGameState =
   { gidInput : Maybe GameId
-  , pidInput : List PlayerId -- List to support multiplayer on same client. If empty we are a spectator
+  , newPidInput : Maybe PlayerId
+  , pidsInput : List PlayerId -- List to support multiplayer on same client. If empty we are a spectator
   , isMasterInput : Bool
   , message : Maybe String }
 
-type alias ClientPlayState =
-  { gameId : GameId
-  , gameState : GameState {- game state should have .gameId == gId -}
-  , message : Maybe String
-  }
-
-type alias ClientSpectateState =
-  { gameId : GameId
-  , gameState : Maybe GameState {- Nothing if the server hasn't sent us a message -}
-  , message : Maybe String }
-
--- describe what type of lobby this is (play or spectate)
+    -- describe what type of lobby this is (play or spectate)
 type LobbyType = LobbyPlay
                | LobbySpectate
 
@@ -172,29 +179,37 @@ type alias ClientLobbyConfigState =
 type alias ClientLobbyState =
     { gameId : GameId
     , playerIds : List PlayerId
-    -- we probably don't need this as playerIds = [] in this case
---    , lobbyType : LobbyType
     -- am I master? if so, what is config state
     , masterConfigState : Maybe ClientLobbyConfigState
     -- has the "host" connected?
     , masterConnected : Bool
     -- what players (incl master) there are.
     -- bool is whether that player is master
-    , playersConnected : List (PlayerId, Bool)
+    , playersConnected : List (PlayerId, Bool) -- for now this is only local players
     , message : Maybe String
     }
+
+type alias ClientPlayMasterState =
+  { gameId : GameId
+  , gameState : GameState {- game state should have .gameId == gId -}
+  , message : Maybe String
+  }
+
+type alias ClientPlaySubState =
+  { gameId : GameId
+  , gameState : Maybe GameState {- Nothing if the server hasn't sent us a message -}
+  , message : Maybe String }
 
 type ClientState =
        ClientPreGame ClientPreGameState
      | ClientLobby ClientLobbyState
-     | ClientPlay ClientPlayState
-     | ClientSpectate ClientSpectateState
+     | ClientPlayMaster ClientPlayMasterState
+     | ClientPlaySub ClientPlaySubState
 
 {- Messages used by main app -}
 type Msg =
           {- communications -}
-            SendToServer String
-          | GotServerMsg String
+            GotServerMsg String
           {- for debugging -}
           | ShowState
           {- pregame. -}
@@ -208,10 +223,8 @@ type Msg =
           | UpdateMasterSeed String
           | StartGame
           {- in game -}
-          | PlayCard Int
-          | EndPhase
-          | BuyCard CardId
-          | EndBuy
+          | SubmitMove MoveDesc -- master and nonmaster use this
+          | DoMove MoveDesc -- only master uses this
           {- miscellaenous -}
           {- message sent when new random seed is generated 
              gets randomness if the user did not provide it, and deals initial hand -}
@@ -219,45 +232,84 @@ type Msg =
           {- if a task fails - should be a no op, possibly log error. not sure if i even use this... -}
           | TaskFail String
           {- general call to update client's state, and send it to the server (todo: rename; this is a master-only thing) -}
-          | UpdateClientState ClientState
+--          | UpdateClientState ClientState
+          | BroadcastGameState
           | NoOp -- should never be responded to
-          | RestartClient -- TODO remove this one
+          | RestartClient
 
+{- Description of possible moves; used to serialize/deserialize moves between
+   server and clients -}
+type MoveDesc = PlayCard Int
+              | BuyCard Int
+              | EndPhase
+              | Accept
+              | Decline
+
+moveDescEncoder : MoveDesc -> Value
+moveDescEncoder md = case md of
+                         PlayCard i -> Encode.object [("moveType", Encode.string "play")
+                                                     ,("card", Encode.int i)]
+                         BuyCard i -> Encode.object [("moveType", Encode.string "buy")
+                                                    ,("card", Encode.int i)]
+                         EndPhase -> Encode.object [("moveType", Encode.string "endPhase")]
+                         Accept -> Encode.object [("moveType", Encode.string "accept")]
+                         Decline -> Encode.object [("moveType", Encode.string "decline")]
+
+moveDescDecoder : Decoder MoveDesc
+moveDescDecoder =
+    ("moveType" := string) `andThen` \moveType ->
+        case moveType of
+            "play" -> object1 PlayCard ("card" := int)
+            "buy" -> object1 BuyCard ("card" := int)
+            "endPhase" -> succeed EndPhase
+            "accept" -> succeed Accept
+            "decline" -> succeed Decline
+            _ -> fail "invalid move"
+                 
 {- Type for messages sent from client to server -}
 type ClientToServerMsg =
-       StartGameCMsg GameId
-     | SpectateGameCMsg GameId
-     | UpdateGameCMsg GameId GameState
+       JoinLobbyCMsg GameId (List PlayerId) Bool
+     | StartGameCMsg GameId
+     | MakeMoveCMsg GameId MoveDesc 
+     | MasterPushCMsg GameId GameState
 
 {- Serialization code -}
-{- we need to be smarter about this; especially enums -}
 clientToServerMsgEncoder : ClientToServerMsg -> Value
 clientToServerMsgEncoder msg =
     case msg of
-        StartGameCMsg id -> Encode.object [ ("msgType", Encode.string "start")
-                                          , ("gameId", Encode.string id)]
-        SpectateGameCMsg id -> Encode.object [ ("msgType", Encode.string "spectate")
-                                         , ("gameId", Encode.string id)]
-        UpdateGameCMsg gid gst ->
+        JoinLobbyCMsg gid ps master ->
+            Encode.object [ ("msgType", Encode.string "join")
+                          , ("gameId", Encode.string gid)
+                          , ("players", Encode.list (List.map Encode.string ps))
+                          , ("master", Encode.bool master) ]
+                              
+        StartGameCMsg gid -> Encode.object [ ("msgType", Encode.string "start")
+                                           , ("gameId", Encode.string gid) ]
+
+        MakeMoveCMsg gid md -> Encode.object [ ("msgType", Encode.string "makeMove")
+                                             , ("move", moveDescEncoder md)
+                                             , ("gameId", Encode.string gid)]
+                                
+        MasterPushCMsg gid gst ->
                 Encode.object [ ("msgType", Encode.string "update")
                               , ("gameId", Encode.string gid)
                               , ("gameState", gameStateEncoder gst) ]
-                           
+
+{- Encode/decode descriptions of moves -}
+                    
 {- Responses from server -}
--- TODO give this a more reasonable name.
-type ServerToClientMsg = UpdateGameSMsg GameState String
-                       | UnknownSMsg -- used in event of parse failure
+type ServerToClientMsg = PlayerJoinedSMsg GameId (List PlayerId)
+--                       | StartGameSMsg GameId
+                       | MadeMoveSMsg GameId PlayerId MoveDesc -- used to inform master of another user's move
+                       | UpdateGameSMsg GameId GameState String -- receive master's pushed game state
+                       | UnknownSMsg -- used in event of parse failure; eventually remove
 
 {- JSON decoder for game states -}
--- it would be better to put all these in a sub-module called decoders
--- better yet, have a separate file for communications stuff
--- special thanks to https://robots.thoughtbot.com/decoding-json-structures-with-elm
+{- special thanks to https://robots.thoughtbot.com/decoding-json-structures-with-elm -}
 
--- the following are decoders needed to decode the game state back from JSON
 -- transform the keys of a dict, specialized to String and Int
--- to get around typechecker limitations (that i believe exist anyway)
 -- NB this throws away bindings that fail to parse
--- also, seems inefficient perhaps
+-- perhaps inefficent; probably unused now
 dictKeysMap : Dict.Dict String a -> Dict.Dict Int a
 dictKeysMap d =
     List.foldl
@@ -299,6 +351,7 @@ shopEncoder d =
 gameStateDecoder : Decoder GameState
 gameStateDecoder =
     (succeed GameState)
+        |: ("gameId" := string)
         |: ("players" := dict playerStateDecoder {- |> Decode.map dictKeysMap -})
         |: ("playerOrder" := list string)
         |: ("shop" := shopDecoder)
@@ -310,8 +363,7 @@ gameStateDecoder =
         |: ("plays" := list int)
         |: ("phase" := gamePhaseDecoder)
         |: ("rng" := int)
---        |: ("winners" := list (dict winnersDecoder))
-        |: ("gameId" := string)
+        |: ("prompt" := gamePromptDecoder)
 
 playersEncoder : Dict.Dict PlayerId PlayerState -> Value
 playersEncoder d =
@@ -319,7 +371,8 @@ playersEncoder d =
 
 gameStateEncoder : GameState -> Value
 gameStateEncoder gs =
-    Encode.object [ ("players", playersEncoder gs.players)
+    Encode.object [ ("gameId", Encode.string gs.gameId)
+                  , ("players", playersEncoder gs.players)
                   , ("playerOrder", Encode.list (List.map Encode.string gs.playerOrder))
                   , ("shop", shopEncoder gs.shop)
                   , ("trash", Encode.list (List.map Encode.int gs.trash))
@@ -330,22 +383,36 @@ gameStateEncoder gs =
                   , ("plays", Encode.list (List.map Encode.int gs.plays))
                   , ("phase", gamePhaseEncoder gs.phase)
                   , ("rng", Encode.int gs.rng)
-                  , ("gameId", Encode.string gs.gameId)
+                  , ("prompt", gamePromptEncoder gs.prompt)
                   ]
 
 {- JSON decoder for server messages -}
+-- TODO: use 'fail' instead of having Unknown S Msg?
 serverToClientMsgDecoder : Decoder ServerToClientMsg
 serverToClientMsgDecoder =
     -- check based on type, to see what you need
-    andThen ("msgType" := string)
-        (\s -> case s of
-                   "updateGameState" ->
-                           object2 UpdateGameSMsg
-                               ("gameState" := gameStateDecoder)
-                               ("message" := string)
+    ("msgType" := string) `andThen`
+        \s -> case s of
+--                   "startGame" -> object1 StartGameSMsg ("gameId" := string)
+                      
+                  "madeMove" ->
+                      object3 MadeMoveSMsg
+                          ("gameId" := string)
+                          ("playerId" := string)
+                          ("move" := moveDescDecoder)
+                  
+                  "updateGame" ->
+                      object3 UpdateGameSMsg
+                          ("gameId" := string)
+                          ("gameState" := gameStateDecoder)
+                          ("message" := string)
+
+                  "playerJoined" ->
+                      object2 PlayerJoinedSMsg
+                          ("gameId" := string)
+                          ("players" := list string)
                    
-                   _ -> succeed UnknownSMsg
-        )
+                  _ -> succeed UnknownSMsg
     
                    
 {- deserialization code -}

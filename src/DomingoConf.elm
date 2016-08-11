@@ -38,6 +38,7 @@ villageHowMany = 10
 rngBogusValue : Int
 rngBogusValue = 0
 
+-- TODO move this out, let users apply changes to it
 startingGameState : GameState
 startingGameState =
   { players = Dict.fromList [(dummyId, startingPlayerState)]
@@ -49,9 +50,8 @@ startingGameState =
   , purchases = [], plays = []
   , phase = PreGamePhase
   , rng = rngBogusValue
---  , winners = []
---  , message = "" -- TODO eventually get rid of this?
   , gameId = ""
+  , prompt = NoPrompt
   }
 
 {- predicate checking for game over (called after each purchase) -}

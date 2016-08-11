@@ -14,8 +14,11 @@ app.get('/Domingo.js', function(req,res){
     res.sendfile('Domingo.js');
 });
 
+// TODO: on a timer, try emitting the server state (ie game list)
+// see if we are leaking
+
 io.on('connection', function(socket){
-    socket.emit('game', "hi");
+    //socket.emit('game', "hi");
 
     //add this socket to list of clients, for later use
     //connection will not be ready yet, until
@@ -33,6 +36,7 @@ io.on('connection', function(socket){
             console.log("Result is " + parsedMsg);
         }
 
+        // now, this will handle anyone joining a game
         // handle spectator registration
         if (parsedMsg.msgType === "spectate") {
             gId = parsedMsg.gameId;
@@ -40,7 +44,6 @@ io.on('connection', function(socket){
             clients[socket.id] =  {gameId : gId, master : false, socket : socket, ready : true};
         }
         // handle player registration
-        // todo, START messages should actually be a thing at some point
 /*        else if (parsedMsg.msgType === "start") {
             console.log("STARTING A GAME");
             gId = parsedMsg.gameId;

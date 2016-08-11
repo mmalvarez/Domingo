@@ -14,7 +14,7 @@ import String
 {- button generators -}
 {- for buttons on hand cards -}
 buttonGenHand pos =
-  [tr [] [], button [ onClick (PlayCard pos) ] [ text ({-(toString pos) ++ -}" play") ]]
+  [tr [] [], button [ onClick (SubmitMove (PlayCard pos)) ] [ text ({-(toString pos) ++ -}" play") ]]
 
 {- for buttons on shop cards (TODO) -}
 
@@ -39,7 +39,7 @@ displayHand cards =
 
 {- button for shop -}
 buttonGenShop cId shop =
-  [tr [] [], button [ onClick (BuyCard cId)] [ text ("Buy (" ++ toString (dflGet cId shop 0) ++ " remain)") ]]
+  [tr [] [], button [ onClick (SubmitMove (BuyCard cId))] [ text ("Buy (" ++ toString (dflGet cId shop 0) ++ " remain)") ]]
 
 {- display cards in shop -}
 -- isSpectator used to control whether buttons show up, eventually
@@ -105,9 +105,20 @@ displayGameState gameState isSpectator =
                          ]
     in output
 
--- next, we need to be able to display connected players.
--- also we need to add a new message type for "am i master"
+-- TODO move this to DomingoLib
+strOfMaybe : Maybe String -> String
+strOfMaybe ms = case ms of
+                    Nothing -> ""
+                    Just s -> s
 
+strOfMaybeInt : Maybe Int -> String
+strOfMaybeInt mi = case mi of
+                       Nothing -> ""
+                       Just i -> toString i
+
+-- add Html.Attributes.value
+
+-- next, we need to be able to display connected players.
 displayPlayerIdInputs cpgs =
     div [] <|
         (List.concatMap (\pId ->
@@ -115,9 +126,10 @@ displayPlayerIdInputs cpgs =
                              , button [onClick (RemovePlayer pId)] [text "-"]
                              , br [] []
                              ]
-                        ) cpgs.pidInput) ++
+                        ) cpgs.pidsInput) ++
           [ br [] [], br [] []
-          , input [onInput UpdateNewPlayer, placeholder "Name of new player"] []
+          , input [onInput UpdateNewPlayer, placeholder "Name of new player"
+                  , value (strOfMaybe cpgs.newPidInput)] []
           , button [onClick AddNewPlayer] [text "+"]
           ]
 
@@ -133,7 +145,8 @@ displayPlayersConnected connected =
 displayMasterOptions clcState =
     div []
         [ button [onClick StartGame] [text "start game"], br [] []
-        , input [onInput UpdateMasterSeed, placeholder "Optional seed; randomly generated if empty"] []
+        , input [onInput UpdateMasterSeed, placeholder "Optional seed; randomly generated if empty"
+                , value (strOfMaybeInt clcState.rngInput)] []
         ]
 
 -- display the main div
@@ -147,14 +160,12 @@ displayMainDiv clientState =
                 , text "Are you hosting? (Exactly 1 computer per game must.) ",
                     -- TODO i am unsure if "checkbox" is a valid type in elm's html system
                     input [type' "checkbox"
-                          , onInput (\s -> if (String.toLower s) == "true"
-                                           then UpdateIsMaster True
-                                           else UpdateIsMaster False)] [], br [] []
-                , input [onInput UpdateGameId, placeholder "Game ID"] []
+                          , checked cpgs.isMasterInput
+                          , onCheck UpdateIsMaster] [], br [] []
+                , input [onInput UpdateGameId, placeholder "Game ID"
+                        , value (strOfMaybe cpgs.gidInput)] []
                 , br [] []
                 , button [onClick StartLobby]  [text "start game lobby"]
-                , br [] []
-                , button [ onClick RestartClient ]  [ text "restart client" ]
                 ]
 
         ClientLobby cglState ->
@@ -172,7 +183,7 @@ displayMainDiv clientState =
                                   Nothing -> " not") ++ " the master."]
                 , br [] [], br [] []
                 -- TODO make sure "master has connected?" doesn't get out of sync with the players list
-                , text ("Master has" ++ (if cglState.masterConnected then "" else " not") ++ "connected."), br [] []
+                , text ("Master has" ++ (if cglState.masterConnected then "" else " not") ++ " connected."), br [] []
                 , text "Players connected: ", br [] []
                 , displayPlayersConnected cglState.playersConnected
                 , br [] [], br [] []
@@ -181,19 +192,18 @@ displayMainDiv clientState =
                      Just clc -> [displayMasterOptions clc]
                      Nothing -> [])
 
-        ClientPlay cpState ->
+        ClientPlayMaster cpmState ->
             div []
-                <| [ h2 [] [text <| "Playing Domingo. Game ID: " ++ toString cpState.gameId] ]
+                <| [ h2 [] [text <| "Playing Domingo. Game ID: " ++ toString cpmState.gameId] ]
                    ++
                    -- false because you are not spectator
-                   [displayGameState cpState.gameState False] ++
-                   [button [onClick EndPhase] [text "end phase/turn"]]
+                   [displayGameState cpmState.gameState False] ++
+                   [button [onClick (SubmitMove EndPhase)] [text "end phase/turn"]]
   
-        ClientSpectate csState ->
+        ClientPlaySub csState ->
             case csState.gameState of
                 -- TODO - limit knowledge of game state (eventually...)
                 Just gSt ->
-                    -- true because you are spectator
                     displayGameState gSt True
                         
                 Nothing ->
@@ -208,11 +218,11 @@ displayClientOptions clientState =
             (case clientState of
                  ClientPreGame cpg -> cpg.message
                  
-                 ClientPlay cp -> cp.message
+                 ClientPlayMaster cp -> cp.message
 
                  ClientLobby cl -> cl.message
                                                            
-                 ClientSpectate cs -> cs.message
+                 ClientPlaySub cs -> cs.message
             ) of
                 
             Nothing -> "message:"

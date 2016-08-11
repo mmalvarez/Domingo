@@ -53,12 +53,11 @@ shuffle l iSeed =
   fst <| shuffle' l (Random.initialSeed iSeed)
 
 
-
-
-{- run tasks on a client state -}
-doClientTask : ClientTask -> Cmd Msg
+{- run tasks on a client state; almost certainly defunct -}
+{- doClientTask : ClientTask -> Cmd Msg
 doClientTask = Task.perform (\str -> TaskFail str)
                             (\state -> UpdateClientState state)
+-}
 
 {- update'. this function updates a value in a Dict. it is a noop if key is not there -}
 update' : comparable -> (v -> v) -> Dict.Dict comparable v -> Dict.Dict comparable v
@@ -159,7 +158,14 @@ scoreCards : List CardId -> Dict.Dict CardId Card -> Int
 scoreCards l all =
   List.foldl (\cId i ->
               let c = dflGet cId all urCard in
-              c.victory + i) 0 l        
+              c.victory + i) 0 l
+
+{- turn a list of players into a Dict with initial player states (as specified in DomingoConf) -}
+{- TODO make this more tunable? -}
+{- TODO move this out somewhere that makes sense -}
+initPlayers : PlayerState -> List PlayerId -> Dict.Dict PlayerId PlayerState
+initPlayers start =
+    List.foldl (\i d -> Dict.insert i start d) Dict.empty   
 
 {- dummy card used for lookups that the compiler thinks could fail -}
 urId = -1
@@ -169,4 +175,3 @@ urCard =
   { idn = urId, name = "Ur-Card", img = Nothing, text = Nothing
   , kind = "", victory = 0, spentValue = 0, cost = Random.maxInt
   , playedEffect = Nothing }
-
