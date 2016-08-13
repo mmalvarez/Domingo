@@ -3,6 +3,7 @@ import Html.Attributes exposing (..)
 import Html.Events exposing(..)
 import Html.App
 import Dict
+import Set
 import List
 import Random
 import Task exposing (succeed)
@@ -109,7 +110,6 @@ update msg state =
                         case cpst.isMasterInput of
                             False -> Nothing
                             True -> Just {rngInput = Nothing}
-                                
                 in
                 let clst =
                         { gameId = gid
@@ -117,22 +117,12 @@ update msg state =
                         , masterConfigState = clcst
                         -- if we are master, master has connected. else, no
                         , masterConnected = cpst.isMasterInput
-                        -- TODO: is this the right semantics?
-                        -- or do we wait for an acknowledgement
-                        , playersConnected =
-                            case cpst.pidsInput of
-                                [] -> []
-                                -- first player in list is master, if "we" are master
-                                p1 :: ps ->
-                                    case cpst.isMasterInput of
-                                        True ->
-                                            (p1, True) :: List.map (\p -> (p, False)) ps
-                                        False ->
-                                            List.map (\p -> (p, False)) cpst.pidsInput
+                        , localPlayerIds = cpst.pidsInput
                         , message = cpst.message
                         }
                 in
-                    (ClientLobby clst, Cmd.none) -- send a clientToServerMsg about this
+                    (ClientLobby clst, pushMsg
+                         (JoinLobbyCMsg gid cpst.pidsInput cpst.isMasterInput))
 
     {- game lobby -}
     (UpdateMasterSeed seedStr, ClientLobby clst) ->
@@ -144,7 +134,6 @@ update msg state =
             Err _ -> (ClientLobby clst, Cmd.none)
 
 
-    -- TODO make this send a message to server
     (StartGame, ClientLobby clst) ->
         -- this is only something master can do
         case clst.masterConfigState of
@@ -169,6 +158,7 @@ update msg state =
                             (ClientPlayMaster { gameId = clst.gameId
                                               , gameState = startStateRng
                                               , message = clst.message
+                                              , localPlayerIds = Set.fromList clst.localPlayerIds
                                               }
                             , Random.generate FinishStartingGame (Random.int Random.minInt Random.maxInt))
                 
@@ -210,16 +200,21 @@ update msg state =
                 |> initialDeal |> updateAndPushMasterState state
 
     -- if we are master, do the move locally, and then push update
-    (SubmitMove md, ClientPlayMaster cp) ->
+    (SubmitMove pd, ClientPlayMaster cp) ->
         -- use tasks here
-        (ClientPlayMaster cp, sendInternalMsg (DoMove md))
+        let currentPlayer = dflHead cp.gameState.playerOrder dummyId in
+        (ClientPlayMaster cp, sendInternalMsg (DoMove {play = pd, playerId = currentPlayer}))
 
     -- if not we push our move to the server
-    (SubmitMove md, ClientPlaySub cps) ->
-        (ClientPlaySub cps, pushMsg (MakeMoveCMsg cps.gameId md))
+    (SubmitMove pd, ClientPlaySub cps) ->
+        -- if we don't have a game state (from server) yet, do nothing
+        -- (we could also keep track of players locally, but unnecessary i think)
+        
+        let currentPlayer = dflHead cps.gameState.playerOrder dummyId in
+        (ClientPlaySub cps, pushMsg (MakeMoveCMsg cps.gameId {play = pd, playerId = currentPlayer}))
 
     (DoMove md, ClientPlayMaster cp) ->
-        case md of
+        case md.play of
             PlayCard pos ->
                 let
                     gst = cp.gameState
@@ -338,37 +333,68 @@ update msg state =
     -- handle asynchronous server messages
     (GotServerMsg msg, _) ->
         -- see if we are getting them this far
-        let decodedResult = Debug.log "got here!!!" <| parseServerToClientMessage msg in
+        let decodedResult = parseServerToClientMessage msg in
         case decodedResult of
             Ok decoded ->
                 case decoded of
-                    UpdateGameSMsg gi gs msg ->
+                    PlayerJoinedSMsg gId pIds ->
+                        case state of
+                            ClientLobby cls ->
+                                -- only if we are master
+                                case cls.masterConfigState of
+                                    Nothing ->
+                                        (state, Cmd.none) -- TODO: change this to update players for subs too
+                                    Just _ ->
+                                        -- TODO make sure we don't have duplicate players
+                                        (ClientLobby {cls | playerIds = cls.playerIds ++ pIds}
+                                        , Debug.log "HI" Cmd.none)
+
+                            _ -> (state, Cmd.none)
+                                        
+                    
+                    UpdateGameStateSMsg gi gs msg ->
                         -- TODO add a way to acknowledge you got message
                         case state of
                             -- only perform the update if we are not master
+                            -- and are in lobby or game (right now spectators not reacting)
+                            ClientLobby cls ->
+                                case cls.masterConfigState of
+                                    Nothing ->
+                                        -- make sure the ID is correct
+                                        if cls.gameId == gs.gameId
+                                        then (ClientPlaySub { gameId = cls.gameId
+                                                            , gameState = gs
+                                                            , message = Just msg
+                                                            , localPlayerIds = Set.fromList cls.localPlayerIds}
+                                             , Cmd.none)
+                                        else (state, Cmd.none)
+                                            
+                                    Just mcs ->
+                                        (state, Cmd.none)
+                                            
                             ClientPlaySub cps ->
                                 let newGameState =
                                         -- check to make sure the game ID is correct
                                         if cps.gameId == gs.gameId
-                                        then Just gs
+                                        then gs
                                         else cps.gameState
                                 in
-                                ((ClientPlaySub {cps | gameState = newGameState
-                                                      , message = Just msg
-                                                 }), Cmd.none) 
+                                (ClientPlaySub {cps | gameState = newGameState
+                                                     , message = Just msg
+                                               }, Cmd.none)
 
                             ClientPreGame cpgs -> (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
                             ClientPlayMaster cpm -> (ClientPlayMaster {cpm | message = Just msg}, Cmd.none)
-                            ClientLobby cls -> (ClientLobby {cls | message = Just msg}, Cmd.none)
+
 
                     
-                    MadeMoveSMsg gi pi md ->
+                    MadeMoveSMsg gi md ->
                         case state of
                             -- TODO: check for game ID consistency?
                             ClientPlayMaster cpms ->
                                 -- make sure it is that player's turn
                                 -- TODO: do somthing to prevent spoofing
-                                if List.head cpms.gameState.playerOrder == Just pi
+                                if List.head cpms.gameState.playerOrder == Just md.playerId
                                 then (state, sendInternalMsg (DoMove md))
                                 else (state, Cmd.none)
 

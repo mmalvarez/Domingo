@@ -8,6 +8,7 @@ import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing(..)
 import Dict
+import Set
 import String
 
 
@@ -20,6 +21,7 @@ buttonGenHand pos =
 
 {- output a card as HTML -}
 {- takes card ID, its position in the list, and additional stuff to put at the bottom -}
+{- also takes ID of the current player -}
 displayCard cId footer =
   let c = dflGet cId allCards urCard in
   table [Html.Attributes.style [("outlineColor", "black"), ("outlineStyle", "solid")]]
@@ -38,16 +40,20 @@ displayHand cards =
                             ([], 0) cards)
 
 {- button for shop -}
-buttonGenShop cId shop =
-  [tr [] [], button [ onClick (SubmitMove (BuyCard cId))] [ text ("Buy (" ++ toString (dflGet cId shop 0) ++ " remain)") ]]
+{- TODO add player ID to the message -}
+buttonGenShop cId =
+  [tr [] [], button [ onClick (SubmitMove (BuyCard cId))]
+                    [ text "Buy" ]]
 
 {- display cards in shop -}
--- isSpectator used to control whether buttons show up, eventually
--- TODO fix this table structure pls
-displayShop shop isSpectator =
+-- eventually this should take an input saying if it's your turn
+displayShop shop ourTurn =
+    let footer' cId = if ourTurn then buttonGenShop cId else []
+        footer cId = footer' cId ++ [ text (" - Remaining: " ++ toString (dflGet cId shop 0))]
+    in
   table []
         (List.foldl (\cId acc -> acc ++
-                         [td [] [displayCard cId (buttonGenShop cId shop)], td [] []])
+                         [td [] [displayCard cId (footer cId)], td [] []])
          [] (Dict.keys shop))
 
 displayWinnersTable gst =
@@ -70,39 +76,70 @@ displayWinners gst =
                                 , th [] [text "victory score"]]]
                             ++ displayWinnersTable gst)]
 
+-- display list of characters, and which are local        
+displayAllPlayers gameState localPlayers =
+    div [] <|
+        [ text "Players playing:", br [] []] ++
+            List.concatMap (\p -> if Set.member p localPlayers
+                                  then [text (p ++ " (local)") , br [] []]
+                                  else [text p, br [] []]) gameState.playerOrder
+
+-- show the current player's amount of resources                
+displayResources gameState currPlayer ourTurn =
+    div []
+        [ text "Current Player's resources:", br [] []
+        , text ("Actions: " ++ toString gameState.actions), br [] []
+        , text ("Coin: " ++ toString gameState.coin), br [] []
+        , text ("Buys: " ++ toString gameState.buys), br [] []
+        , br [] []]
+        {-
+        -- TODO prune/reorganize this information display
+        , text ("Current Phase: " ++ toString gameState.phase)
+        , br [] []
+        , text ("Your deck has " ++ toString (List.length currPlayer.deck) ++ " cards")
+        , br [] []
+        , text (toString (List.length (gameState.plays)) ++ " cards have been played this turn; "
+                    ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
+        ]
+-}
+    
+    
 -- display the state of the game
--- isSpectator isn't used right now, may be later?
-displayGameState gameState isSpectator =
+-- second argument is a list of local players, to determine if we
+-- should show the buttons
+displayGameState gameState localPlayers =
     let
         currPid = dflHead gameState.playerOrder dummyId
         currPlayer = dflGet currPid gameState.players dummy
+        ourTurn = Set.member currPid localPlayers
         output =
             if gameState.phase == EndGamePhase
               then
                   displayWinners gameState
               else
+                  -- show players connected
                   -- otherwise, show the game
-                  div [] [ text ("You are player " ++ toString currPid ++ ". Your hand:")
-                         , br [] []
-                         , displayHand currPlayer.hand
-                         , br [] []
-                         , text "Your resources:", br [] []
-                         , text ("Actions: " ++ toString gameState.actions), br [] []
-                         , text ("Coin: " ++ toString gameState.coin), br [] []
-                         , text ("Buys: " ++ toString gameState.buys), br [] []
-                         , br [] []
-                         , text "Shop:", br [] []
-                         , displayShop gameState.shop isSpectator
-                         , br [] []
-                         , br [] []
-                         -- TODO prune/reorganize this information display
-                         , text ("Current Phase: " ++ toString gameState.phase)
-                         , br [] []
-                         , text ("Your deck has " ++ toString (List.length currPlayer.deck) ++ " cards")
-                         , br [] []
-                         , text (toString (List.length (gameState.plays)) ++ " cards have been played this turn; "
-                                     ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
-                         ]
+                  div [] <|
+                      [displayAllPlayers gameState localPlayers
+                      , text ("It is currently " ++ toString currPid ++ "'s turn.")
+                      , br [] []] ++
+                      [text ("Current Phase: " ++ toString gameState.phase), br [] []] ++
+                      [if ourTurn then displayHand currPlayer.hand
+                       else text "not your turn."
+                      , br [] []] ++
+                      [displayResources gameState currPlayer ourTurn
+                      , br [] []] ++
+                      [displayShop gameState.shop ourTurn
+                      , br [] []] ++
+                      (if ourTurn then
+                           [button [onClick (SubmitMove EndPhase)] [text "end phase/turn"]]
+                       else []) ++
+                      [br [] []]
+                          
+                      -- TODO: include more diagnostic/informative info about what happened
+
+{-
+ -}
     in output
 
 -- TODO move this to DomingoLib
@@ -134,8 +171,8 @@ displayPlayerIdInputs cpgs =
           ]
 
 displayPlayersConnected connected =
-    div [] <| List.concatMap (\(pId, isMaster) ->
-                                  [ text (pId ++ (if isMaster then " *master" else ""))
+    div [] <| List.concatMap (\pId ->
+                                  [ text pId
                                   , br [] []
                                   ]
                              ) connected
@@ -185,30 +222,21 @@ displayMainDiv clientState =
                 -- TODO make sure "master has connected?" doesn't get out of sync with the players list
                 , text ("Master has" ++ (if cglState.masterConnected then "" else " not") ++ " connected."), br [] []
                 , text "Players connected: ", br [] []
-                , displayPlayersConnected cglState.playersConnected
+                , displayPlayersConnected cglState.playerIds
                 , br [] [], br [] []
                 ] ++
                 (case cglState.masterConfigState of
                      Just clc -> [displayMasterOptions clc]
                      Nothing -> [])
 
-        ClientPlayMaster cpmState ->
-            div []
-                <| [ h2 [] [text <| "Playing Domingo. Game ID: " ++ toString cpmState.gameId] ]
-                   ++
-                   -- false because you are not spectator
-                   [displayGameState cpmState.gameState False] ++
-                   [button [onClick (SubmitMove EndPhase)] [text "end phase/turn"]]
+        -- add a "whose turn"
+        ClientPlayMaster cpState ->
+            displayGameState cpState.gameState cpState.localPlayerIds
   
-        ClientPlaySub csState ->
-            case csState.gameState of
-                -- TODO - limit knowledge of game state (eventually...)
-                Just gSt ->
-                    displayGameState gSt True
-                        
-                Nothing ->
-                    text "Your game has not started yet."
-
+        ClientPlaySub cpState ->
+            -- TODO: if it's the turn of someone who's local,
+            -- show the buttons!
+            displayGameState cpState.gameState cpState.localPlayerIds
 
 {- Displays some options that affect the entire
    client and are displayed regardless of game state -}

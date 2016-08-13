@@ -2,6 +2,7 @@
 module DomingoModel exposing(..)
 
 import Dict
+import Set
 import Task
 import List
 import String
@@ -184,27 +185,22 @@ type alias ClientLobbyState =
     -- has the "host" connected?
     , masterConnected : Bool
     -- what players (incl master) there are.
-    -- bool is whether that player is master
-    , playersConnected : List (PlayerId, Bool) -- for now this is only local players
+    , localPlayerIds : List PlayerId -- for now this is only local players
     , message : Maybe String
     }
 
-type alias ClientPlayMasterState =
+type alias ClientPlayState =
   { gameId : GameId
+  , localPlayerIds : Set.Set PlayerId -- keep track of whose turns should be taken on this machine
   , gameState : GameState {- game state should have .gameId == gId -}
   , message : Maybe String
   }
 
-type alias ClientPlaySubState =
-  { gameId : GameId
-  , gameState : Maybe GameState {- Nothing if the server hasn't sent us a message -}
-  , message : Maybe String }
-
 type ClientState =
        ClientPreGame ClientPreGameState
      | ClientLobby ClientLobbyState
-     | ClientPlayMaster ClientPlayMasterState
-     | ClientPlaySub ClientPlaySubState
+     | ClientPlayMaster ClientPlayState
+     | ClientPlaySub ClientPlayState
 
 {- Messages used by main app -}
 type Msg =
@@ -223,7 +219,7 @@ type Msg =
           | UpdateMasterSeed String
           | StartGame
           {- in game -}
-          | SubmitMove MoveDesc -- master and nonmaster use this
+          | SubmitMove PlayDesc -- master and nonmaster use this
           | DoMove MoveDesc -- only master uses this
           {- miscellaenous -}
           {- message sent when new random seed is generated 
@@ -239,37 +235,48 @@ type Msg =
 
 {- Description of possible moves; used to serialize/deserialize moves between
    server and clients -}
-type MoveDesc = PlayCard Int
+type PlayDesc = PlayCard Int
               | BuyCard Int
               | EndPhase
               | Accept
               | Decline
+type alias MoveDesc = {playerId : PlayerId, play : PlayDesc}
 
 moveDescEncoder : MoveDesc -> Value
-moveDescEncoder md = case md of
+moveDescEncoder md = case md.play of
                          PlayCard i -> Encode.object [("moveType", Encode.string "play")
-                                                     ,("card", Encode.int i)]
+                                                     ,("card", Encode.int i)
+                                                     ,("player", Encode.string md.playerId)]
                          BuyCard i -> Encode.object [("moveType", Encode.string "buy")
-                                                    ,("card", Encode.int i)]
-                         EndPhase -> Encode.object [("moveType", Encode.string "endPhase")]
-                         Accept -> Encode.object [("moveType", Encode.string "accept")]
-                         Decline -> Encode.object [("moveType", Encode.string "decline")]
+                                                    ,("card", Encode.int i)
+                                                    ,("player", Encode.string md.playerId)]
+                         EndPhase -> Encode.object [("moveType", Encode.string "endPhase")
+                                                    ,("player", Encode.string md.playerId)]
+                         Accept -> Encode.object [("moveType", Encode.string "accept")
+                                                        ,("player", Encode.string md.playerId)]
+                         Decline -> Encode.object [("moveType", Encode.string "decline")
+                                                         ,("player", Encode.string md.playerId)]
 
+-- OK this gets slightly more annoying now that we have to pull it out
+-- TODO: under construction
 moveDescDecoder : Decoder MoveDesc
 moveDescDecoder =
-    ("moveType" := string) `andThen` \moveType ->
-        case moveType of
-            "play" -> object1 PlayCard ("card" := int)
-            "buy" -> object1 BuyCard ("card" := int)
-            "endPhase" -> succeed EndPhase
-            "accept" -> succeed Accept
-            "decline" -> succeed Decline
-            _ -> fail "invalid move"
+    ("player" := string) `andThen` \playerId ->
+        let mkWithCardInput p c = {play = p c, playerId = playerId}
+        in
+        ("moveType" := string) `andThen` \moveType ->
+            case moveType of
+                "play" -> object1 (mkWithCardInput PlayCard) ("card" := int)
+                "buy" -> object1 (mkWithCardInput BuyCard) ("card" := int)
+                "endPhase" -> succeed {play = EndPhase, playerId = playerId}
+                "accept" -> succeed {play = Accept, playerId = playerId}
+                "decline" -> succeed {play = Decline, playerId = playerId}
+                _ -> fail "invalid move"
                  
 {- Type for messages sent from client to server -}
 type ClientToServerMsg =
        JoinLobbyCMsg GameId (List PlayerId) Bool
-     | StartGameCMsg GameId
+     | StartGameCMsg GameId -- TODO I think this one might be superfluous
      | MakeMoveCMsg GameId MoveDesc 
      | MasterPushCMsg GameId GameState
 
@@ -291,7 +298,7 @@ clientToServerMsgEncoder msg =
                                              , ("gameId", Encode.string gid)]
                                 
         MasterPushCMsg gid gst ->
-                Encode.object [ ("msgType", Encode.string "update")
+                Encode.object [ ("msgType", Encode.string "masterPush")
                               , ("gameId", Encode.string gid)
                               , ("gameState", gameStateEncoder gst) ]
 
@@ -299,9 +306,8 @@ clientToServerMsgEncoder msg =
                     
 {- Responses from server -}
 type ServerToClientMsg = PlayerJoinedSMsg GameId (List PlayerId)
---                       | StartGameSMsg GameId
-                       | MadeMoveSMsg GameId PlayerId MoveDesc -- used to inform master of another user's move
-                       | UpdateGameSMsg GameId GameState String -- receive master's pushed game state
+                       | MadeMoveSMsg GameId MoveDesc -- used to inform master of another user's move
+                       | UpdateGameStateSMsg GameId GameState String -- receive master's pushed game state
                        | UnknownSMsg -- used in event of parse failure; eventually remove
 
 {- JSON decoder for game states -}
@@ -367,7 +373,7 @@ gameStateDecoder =
 
 playersEncoder : Dict.Dict PlayerId PlayerState -> Value
 playersEncoder d =
-    Encode.object <| List.map (\(k,v) -> (toString k, playerStateEncoder v)) <| Dict.toList d
+    Encode.object <| List.map (\(k,v) -> (k, playerStateEncoder v)) <| Dict.toList d
 
 gameStateEncoder : GameState -> Value
 gameStateEncoder gs =
@@ -393,16 +399,14 @@ serverToClientMsgDecoder =
     -- check based on type, to see what you need
     ("msgType" := string) `andThen`
         \s -> case s of
---                   "startGame" -> object1 StartGameSMsg ("gameId" := string)
                       
                   "madeMove" ->
-                      object3 MadeMoveSMsg
+                      object2 MadeMoveSMsg
                           ("gameId" := string)
-                          ("playerId" := string)
                           ("move" := moveDescDecoder)
                   
-                  "updateGame" ->
-                      object3 UpdateGameSMsg
+                  "updateGameState" ->
+                      object3 UpdateGameStateSMsg
                           ("gameId" := string)
                           ("gameState" := gameStateDecoder)
                           ("message" := string)
