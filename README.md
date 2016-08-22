@@ -13,7 +13,7 @@ and node.js (tested against 4.2.6) to serve it.
 
 ```
 git clone https://github.com/mmalvarez/Domingo
-cd Domingo
+cd Domingo/src
 make
 ```
 
