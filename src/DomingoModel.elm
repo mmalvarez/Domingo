@@ -161,7 +161,6 @@ type alias ClientPreGameState =
   { gidInput : Maybe GameId
   , newPidInput : Maybe PlayerId
   , pidsInput : List PlayerId -- List to support multiplayer on same client. If empty we are a spectator
-  , isMasterInput : Bool
   , message : Maybe String }
 
     -- describe what type of lobby this is (play or spectate)
@@ -179,13 +178,16 @@ type alias ClientLobbyConfigState =
 -- how many people are connected, is host connected, etc
 type alias ClientLobbyState =
     { gameId : GameId
+    -- players on this client
+    , localPlayerIds : List PlayerId
+    -- all players in game (for display purposes
     , playerIds : List PlayerId
     -- am I master? if so, what is config state
     , masterConfigState : Maybe ClientLobbyConfigState
-    -- has the "host" connected?
-    , masterConnected : Bool
+    -- has the server responded
+    , serverResponded : Bool
     -- what players (incl master) there are.
-    , localPlayerIds : List PlayerId -- for now this is only local players
+    , playerIds : List PlayerId
     , message : Maybe String
     }
 
@@ -210,7 +212,6 @@ type Msg =
           | ShowState
           {- pregame. -}
           | UpdateGameId GameId
-          | UpdateIsMaster Bool
           | UpdateNewPlayer PlayerId            
           | AddNewPlayer
           | RemovePlayer PlayerId
@@ -275,20 +276,23 @@ moveDescDecoder =
                  
 {- Type for messages sent from client to server -}
 type ClientToServerMsg =
-       JoinLobbyCMsg GameId (List PlayerId) Bool
+       JoinLobbyCMsg GameId (List PlayerId)
      | StartGameCMsg GameId -- TODO I think this one might be superfluous
+     | QuitGameCMsg {- GameId -}
      | MakeMoveCMsg GameId MoveDesc 
      | MasterPushCMsg GameId GameState
+     -- TODO is GameId necessary
+     -- takes GameId of game, and list of _all_ players in game
+     | MasterLobbyPushCMsg GameId (List PlayerId)
 
 {- Serialization code -}
 clientToServerMsgEncoder : ClientToServerMsg -> Value
 clientToServerMsgEncoder msg =
     case msg of
-        JoinLobbyCMsg gid ps master ->
+        JoinLobbyCMsg gid ps ->
             Encode.object [ ("msgType", Encode.string "join")
                           , ("gameId", Encode.string gid)
-                          , ("players", Encode.list (List.map Encode.string ps))
-                          , ("master", Encode.bool master) ]
+                          , ("players", Encode.list (List.map Encode.string ps)) ]
                               
         StartGameCMsg gid -> Encode.object [ ("msgType", Encode.string "start")
                                            , ("gameId", Encode.string gid) ]
@@ -298,16 +302,35 @@ clientToServerMsgEncoder msg =
                                              , ("gameId", Encode.string gid)]
                                 
         MasterPushCMsg gid gst ->
-                Encode.object [ ("msgType", Encode.string "masterPush")
-                              , ("gameId", Encode.string gid)
-                              , ("gameState", gameStateEncoder gst) ]
+            Encode.object [ ("msgType", Encode.string "masterPush")
+                          , ("gameId", Encode.string gid)
+                          , ("gameState", gameStateEncoder gst) ]
 
-{- Encode/decode descriptions of moves -}
-                    
+        MasterLobbyPushCMsg gid ps->
+            Encode.object [ ("msgType", Encode.string "masterLobbyPush")
+                          , ("gameId", Encode.string gid)
+                          , ("players", Encode.list (List.map Encode.string ps))]
+
+        QuitGameCMsg ->
+            Encode.object [ ("msgType", Encode.string "quit") ]
+
+type ServerLobbyResponse = LobbyMaster -- if you are the first one in (hence, master)
+                         | LobbyClient -- if you join an active lobby
+                         | LobbyFail -- if you are trying to e.g. join a game that already started,
+                                     -- or choose a player name already taken
+                           
+
 {- Responses from server -}
 type ServerToClientMsg = PlayerJoinedSMsg GameId (List PlayerId)
                        | MadeMoveSMsg GameId MoveDesc -- used to inform master of another user's move
                        | UpdateGameStateSMsg GameId GameState String -- receive master's pushed game state
+                       -- lets the client know they were the first one in and
+                       -- thus are the "master"
+                       -- server responses to attempts to join lobby
+                       | LobbyResponseSMsg ServerLobbyResponse
+                       -- update lobby state with new player list
+                       | UpdateLobbySMsg (List PlayerId)
+                       | PlayerQuitSMsg -- TODO include more info?? maybe a player ID or something
                        | UnknownSMsg -- used in event of parse failure; eventually remove
 
 {- JSON decoder for game states -}
@@ -392,6 +415,18 @@ gameStateEncoder gs =
                   , ("prompt", gamePromptEncoder gs.prompt)
                   ]
 
+-- decode server lobby responses
+-- again, maybe also use 'fail' here
+lobbyResponseDecoder : Decoder ServerLobbyResponse
+lobbyResponseDecoder =
+    ("response" := string) `andThen` \s ->
+        case s of
+            "lobbyMaster" -> succeed LobbyMaster
+            "lobbyClient" -> succeed LobbyClient
+            "lobbyFail" -> succeed LobbyFail
+            _ -> succeed LobbyFail
+
+
 {- JSON decoder for server messages -}
 -- TODO: use 'fail' instead of having Unknown S Msg?
 serverToClientMsgDecoder : Decoder ServerToClientMsg
@@ -415,7 +450,17 @@ serverToClientMsgDecoder =
                       object2 PlayerJoinedSMsg
                           ("gameId" := string)
                           ("players" := list string)
-                   
+
+                  "playerQuit" ->
+                      succeed PlayerQuitSMsg
+
+                  "lobbyResponse" ->
+                      object1 LobbyResponseSMsg lobbyResponseDecoder
+
+                  "updateLobbyState" ->
+                      object1 UpdateLobbySMsg
+                          ("players" := list string)
+
                   _ -> succeed UnknownSMsg
     
                    

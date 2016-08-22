@@ -33,7 +33,6 @@ startingClientState = ClientPreGame
   { gidInput = Nothing
   , newPidInput = Nothing
   , pidsInput = []
-  , isMasterInput = False
   , message = Nothing
   }
 
@@ -75,9 +74,6 @@ update msg state =
     (UpdateGameId gId, ClientPreGame cst) ->
         (ClientPreGame {cst | gidInput = Just gId}, Cmd.none)
 
-    (UpdateIsMaster isMaster, ClientPreGame cst) ->
-        (ClientPreGame {cst | isMasterInput = isMaster}, Cmd.none)
-
     (UpdateNewPlayer pId, ClientPreGame cst) ->
         (ClientPreGame {cst | newPidInput = Just pId}, Cmd.none)
 
@@ -87,10 +83,12 @@ update msg state =
                 case cst.newPidInput of
                     Nothing -> cst.pidsInput
                     Just p ->
-                        -- player IDs must be unique
-                        if List.member p cst.pidsInput
-                        then cst.pidsInput
-                        else cst.pidsInput ++ [p]
+                        if p /= "" then
+                            -- player IDs must be unique
+                            if List.member p cst.pidsInput
+                            then cst.pidsInput
+                            else cst.pidsInput ++ [p]
+                        else cst.pidsInput
         in
         (ClientPreGame {cst | pidsInput = pidsInput'}, Cmd.none)
 
@@ -100,29 +98,25 @@ update msg state =
         in
         (ClientPreGame {cst | pidsInput = pidsInput'}, Cmd.none)
 
+    -- TODO wait for server response to see if we are master
     (StartLobby, ClientPreGame cpst) ->
         -- they need to provide us with a game id
         case cpst.gidInput of
             Nothing -> (ClientPreGame cpst, Cmd.none)
             Just gid ->
-                -- if we are master, create a "master-input" state
-                let clcst =
-                        case cpst.isMasterInput of
-                            False -> Nothing
-                            True -> Just {rngInput = Nothing}
+                let pidsInput' =
+                        case cpst.newPidInput of
+                            Nothing -> cpst.pidsInput
+                            Just p ->
+                                if p /= "" then
+                                    cpst.pidsInput ++ [p]
+                                else cpst.pidsInput
                 in
-                let clst =
-                        { gameId = gid
-                        , playerIds = cpst.pidsInput
-                        , masterConfigState = clcst
-                        -- if we are master, master has connected. else, no
-                        , masterConnected = cpst.isMasterInput
-                        , localPlayerIds = cpst.pidsInput
-                        , message = cpst.message
-                        }
-                in
-                    (ClientLobby clst, pushMsg
-                         (JoinLobbyCMsg gid cpst.pidsInput cpst.isMasterInput))
+                if gid /= "" then
+                    -- don't go into Lobby state get, wait for server confirmation
+                    (state, pushMsg
+                         (JoinLobbyCMsg gid pidsInput'))
+                else (ClientPreGame cpst, Cmd.none)
 
     {- game lobby -}
     (UpdateMasterSeed seedStr, ClientLobby clst) ->
@@ -181,7 +175,7 @@ update msg state =
 
     {- TODO: let server/other clients know we quit? -}
     (RestartClient, _) ->
-        (startingClientState, Cmd.none) -- send a message to the server
+        (startingClientState, pushMsg QuitGameCMsg) -- send a message to the server
 
     {- Checks to see if the RNG default value (bogus value) has not been
        clobbered yet. If it is still default we use the random one we just generated -}
@@ -343,21 +337,22 @@ update msg state =
                                 -- only if we are master
                                 case cls.masterConfigState of
                                     Nothing ->
-                                        (state, Cmd.none) -- TODO: change this to update players for subs too
+                                        (state, Cmd.none)
                                     Just _ ->
+                                        let playerIds' = cls.playerIds ++ pIds in
                                         -- TODO make sure we don't have duplicate players
-                                        (ClientLobby {cls | playerIds = cls.playerIds ++ pIds}
-                                        , Debug.log "HI" Cmd.none)
+                                        -- for now the server should check this
+                                        (ClientLobby {cls | playerIds = playerIds'}
+                                        -- send a "push lobby" command
+                                        , pushMsg (MasterLobbyPushCMsg gId playerIds'))
 
                             _ -> (state, Cmd.none)
                                         
                     
                     UpdateGameStateSMsg gi gs msg ->
-                        -- TODO add a way to acknowledge you got message
                         case state of
-                            -- only perform the update if we are not master
-                            -- and are in lobby or game (right now spectators not reacting)
                             ClientLobby cls ->
+                                -- lobby means the game just started
                                 case cls.masterConfigState of
                                     Nothing ->
                                         -- make sure the ID is correct
@@ -368,7 +363,8 @@ update msg state =
                                                             , localPlayerIds = Set.fromList cls.localPlayerIds}
                                              , Cmd.none)
                                         else (state, Cmd.none)
-                                            
+
+                                    -- only do this if we are not master
                                     Just mcs ->
                                         (state, Cmd.none)
                                             
@@ -386,7 +382,6 @@ update msg state =
                             ClientPreGame cpgs -> (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
                             ClientPlayMaster cpm -> (ClientPlayMaster {cpm | message = Just msg}, Cmd.none)
 
-
                     
                     MadeMoveSMsg gi md ->
                         case state of
@@ -396,8 +391,57 @@ update msg state =
                                 -- TODO: do somthing to prevent spoofing
                                 if List.head cpms.gameState.playerOrder == Just md.playerId
                                 then (state, sendInternalMsg (DoMove md))
-                                else (state, Cmd.none)
+                                else (state, Debug.log "WRONG PLAYER" Cmd.none)
 
+                            _ -> (state, Cmd.none)
+
+                    -- if someone else quit, go back to pregame
+                    PlayerQuitSMsg ->
+                        (startingClientState, Cmd.none)
+
+                    UpdateLobbySMsg players ->
+                        case state of
+                            ClientLobby cls ->
+                                (ClientLobby {cls | playerIds = players}, Cmd.none)
+                            
+                            _ -> (state, Cmd.none)
+
+                    LobbyResponseSMsg lobbyResp->
+                        case state of
+                            ClientPreGame cpst ->
+                                case cpst.gidInput of
+                                    Just gid ->
+                                        -- TODO validate inputs, make sure they are valid (just gameId)
+                                        -- maybe have another state type?
+                                        let allPidsInput = case cpst.newPidInput of
+                                                               Nothing -> cpst.pidsInput
+                                                               Just p ->
+                                                                   if p /= ""
+                                                                   then if List.member p cpst.pidsInput
+                                                                        then cpst.pidsInput
+                                                                        else cpst.pidsInput ++ [p]
+                                                                   else cpst.pidsInput
+                                            clst =
+                                                { gameId = gid
+                                                , playerIds = allPidsInput
+                                                , masterConfigState = Nothing
+                                                , serverResponded = True
+                                                , localPlayerIds = allPidsInput
+                                                , message = cpst.message
+                                                }
+                                        in
+                                            case lobbyResp of
+                                                LobbyMaster ->
+                                                    let masterConf = Just {rngInput = Nothing} in
+                                                    (ClientLobby {clst | masterConfigState = masterConf}, Cmd.none)
+                                                LobbyClient ->
+                                                    (ClientLobby clst, Cmd.none)
+                                                LobbyFail ->
+                                                    (ClientPreGame
+                                                         {cpst | message = Just "unable to join"}, Cmd.none)
+                                    -- we need a game ID
+                                    Nothing -> (state, Cmd.none)
+                                
                             _ -> (state, Cmd.none)
 
                     -- is this a message type we don't understand?

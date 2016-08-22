@@ -194,11 +194,12 @@ displayMainDiv clientState =
                 [ h1 [] [text "Domingo"]
                 , text "Who's playing? (If no players, you are a specator)", br [] []
                 , displayPlayerIdInputs cpgs, br [] [], br [] []
+      {-
                 , text "Are you hosting? (Exactly 1 computer per game must.) ",
-                    -- TODO i am unsure if "checkbox" is a valid type in elm's html system
                     input [type' "checkbox"
                           , checked cpgs.isMasterInput
                           , onCheck UpdateIsMaster] [], br [] []
+       -}
                 , input [onInput UpdateGameId, placeholder "Game ID"
                         , value (strOfMaybe cpgs.gidInput)] []
                 , br [] []
@@ -219,8 +220,6 @@ displayMainDiv clientState =
                                   Just _ -> ""
                                   Nothing -> " not") ++ " the master."]
                 , br [] [], br [] []
-                -- TODO make sure "master has connected?" doesn't get out of sync with the players list
-                , text ("Master has" ++ (if cglState.masterConnected then "" else " not") ++ " connected."), br [] []
                 , text "Players connected: ", br [] []
                 , displayPlayersConnected cglState.playerIds
                 , br [] [], br [] []
