@@ -70,41 +70,46 @@ update' k f d =
 {- this is a no-op unless player has an empty deck and nonempty discard pile -}
 {- NOTE affects the RNG -}
 shufflePlayerDeck : PlayerId -> GameState -> GameState
-shufflePlayerDeck pId st =
-  let p = dflGet pId st.players dummy in
-  if (not <| List.isEmpty p.deck) || (List.isEmpty p.deck && List.isEmpty p.discard)
-    then
-        st
-    else
-      let (newDeck, newSeed) = shuffle' p.discard <| Random.initialSeed st.rng in
-      {st | rng = intOfSeed newSeed
-      , players = update' pId
-                  (\p -> {p | deck = newDeck, discard = []})
-                      st.players
-      }
+shufflePlayerDeck pId ost =
+    case ost of
+        GameState st ->
+            let p = dflGet pId st.players dummy in
+            if (not <| List.isEmpty p.deck) || (List.isEmpty p.deck && List.isEmpty p.discard)
+            then
+                GameState st
+            else
+                let (newDeck, newSeed) = shuffle' p.discard <| Random.initialSeed st.rng in
+                GameState
+                {st | rng = intOfSeed newSeed
+                , players = update' pId
+                            (\p -> {p | deck = newDeck, discard = []})
+                                st.players
+                }
         
 {- Deal the given player a card from the top of their deck -}
 {- NOTE affects the RNG (if it triggers deck shuffling) -}
 dealPlayerCard : PlayerId -> GameState -> GameState
-dealPlayerCard pId st =
-  let p = dflGet pId st.players dummy in
-  {- if there is a card to deal, deal it -}
-  if (not <| List.isEmpty p.deck)
-    then
-        {st | players = update' pId
-             (\p -> {p | deck = dflTail p.deck, hand = dflHead p.deck urId :: p.hand})
-             st.players
-        }
-  else
-      if (not <| List.isEmpty p.discard)
-      {- shuffle and retry if the discard isn't empty
-         (at this point we know deck is also empty)
-       -}
-      then
-        shufflePlayerDeck pId st |> dealPlayerCard pId
-                
-      {- otherwise, no-op -}
-      else st
+dealPlayerCard pId ost =
+    case ost of
+        GameState st ->
+            let p = dflGet pId st.players dummy in
+            {- if there is a card to deal, deal it -}
+            if (not <| List.isEmpty p.deck)
+            then
+                GameState {st | players = update' pId
+                               (\p -> {p | deck = dflTail p.deck, hand = dflHead p.deck urId :: p.hand})
+                               st.players
+                          }
+            else
+                if (not <| List.isEmpty p.discard)
+                {- shuffle and retry if the discard isn't empty
+                (at this point we know deck is also empty)
+                 -}
+                then
+                    shufflePlayerDeck pId ost |> dealPlayerCard pId
+                        
+                {- otherwise, no-op -}
+                else ost
 
 dealPlayerCards : PlayerId -> Int -> GameState -> GameState
 dealPlayerCards p n st =
@@ -114,41 +119,98 @@ dealPlayerCards p n st =
 
 {- deal a card to current player (at front of rotation) -}
 dealCurrentPlayerCards : Int -> GameState -> GameState
-dealCurrentPlayerCards n st =
-  let current = dflHead st.playerOrder dummyId in
-  dealPlayerCards current n st
+dealCurrentPlayerCards n ost =
+    case ost of
+        GameState st ->
+            let current = dflHead st.playerOrder dummyId in
+            dealPlayerCards current n ost
 
 rotatePlayers : GameState -> GameState
-rotatePlayers st =
-  {st | playerOrder = List.drop 1 st.playerOrder ++ List.take 1 st.playerOrder}
+rotatePlayers ost =
+    case ost of
+        GameState st ->
+            GameState {st | playerOrder = List.drop 1 st.playerOrder ++ List.take 1 st.playerOrder}
+
+-- returns the card added (or none) and new shop state, after we gain a card
+gainCardSub : CardId -> GameState -> (List CardId, Dict.Dict CardId Int)
+gainCardSub cId ogs =
+    case ogs of
+        GameState gs ->
+            case Dict.get cId gs.shop of
+                Just n ->
+                    if n > 0 then
+                        ([cId], Dict.insert cId (n-1) gs.shop)
+                    else ([], gs.shop)
+                Nothing ->
+                    ([], gs.shop)
+
+-- the "default"
+putInPlays : CardId -> GameState -> GameState
+putInPlays cId ogs =
+    case ogs of
+        GameState gs ->
+            GameState {gs | plays = gs.plays ++ [cId]}
+
+-- for e.g. feast; cards we trash after playing
+putInTrash : CardId -> GameState -> GameState
+putInTrash cId ogs =
+    case ogs of
+        GameState gs ->
+            GameState {gs | trash = gs.trash ++ [cId]}
+                        
+-- cause the current player to gain a card.
+-- NB this card will go into the "purchases" pile
+-- noop if the card is not in library or has run out
+gainCurrentPlayerCard : CardId -> GameState -> GameState
+gainCurrentPlayerCard cId ogs =
+    case ogs of
+        GameState gs ->
+            let (cardToAdd, newShop) = gainCardSub cId ogs
+            in
+                GameState {gs | purchases = gs.purchases ++ cardToAdd
+                          , shop = newShop}
+
+-- cause a player to "gain" a card (by ID)
+-- if that card is not in the library, or is out, it's a noop
+gainPlayerCard : PlayerId -> CardId -> GameState -> GameState
+gainPlayerCard pId cId ogs =
+    case ogs of
+        GameState gs ->
+            case Dict.get pId gs.players of
+                Just ps ->
+                    let (cardToAdd, newShop) = gainCardSub cId ogs in
+                    GameState {gs | shop = newShop
+                              , players = Dict.insert pId
+                                          {ps | discard = ps.discard ++ cardToAdd} gs.players}
+                Nothing -> ogs
 
 initialDeal : GameState -> GameState
-initialDeal st =
+initialDeal ost =
+    case ost of
+        GameState st ->
     {- check if player 1 has a hand -}
-    let
-      nextId = (dflHead st.playerOrder dummyId)
-
-      nextPlayer = dflGet nextId st.players dummy
-    in
-    {- make sure we don't deal to dummy player, probably unnecessary -}
-    if nextPlayer.valid then
-      {- at this point, we have dealt to everyone already -}
-      if not (List.isEmpty nextPlayer.hand) then
-        {- start the first action phase -}
-          {st | phase = ActionPhase
-              , actions = 1
-              , coin = 0
-              , buys = 1
-          }
-          
-      else
-        {- if not, deal them a hand -}
-        shufflePlayerDeck nextId st |>
-         dealPlayerCards nextId 5 |>
-         rotatePlayers |>
-         initialDeal
-
-    else st
+            let
+                nextId = (dflHead st.playerOrder dummyId)
+                nextPlayer = dflGet nextId st.players dummy
+            in
+                {- make sure we don't deal to dummy player, probably unnecessary -}
+                if nextPlayer.valid then
+                    {- at this point, we have dealt to everyone already -}
+                    if not (List.isEmpty nextPlayer.hand) then
+                        {- start the first action phase -}
+                        GameState {st | phase = ActionPhase
+                                  , actions = 1
+                                  , coin = 0
+                                  , buys = 1
+                                  }
+                        
+                    else
+                        {- if not, deal them a hand -}
+                        shufflePlayerDeck nextId ost |>
+                        dealPlayerCards nextId 5 |>
+                        rotatePlayers |>
+                        initialDeal
+                else ost
 
 {- sum how many victory points a list of cards is worth 
    should be passed the list of cards to check (allCards); this is to
@@ -174,4 +236,4 @@ urCard : Card
 urCard =
   { idn = urId, name = "Ur-Card", img = Nothing, text = Nothing
   , kind = "", victory = 0, spentValue = 0, cost = Random.maxInt
-  , playedEffect = Nothing }
+  , playedEffect = Nothing, afterPlayEffect = (\x -> x) }

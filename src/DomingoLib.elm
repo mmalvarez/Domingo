@@ -49,6 +49,16 @@ dflDropNth n l =
       if n == 0 then t
       else h :: dflDropNth (n-1) t
 
+{- Drop the first occurrence of an item in a list,
+   leaving the list untouched if the item is not there -}
+dropFirstInt : Int -> List Int -> List Int
+dropFirstInt i l =
+    case l of
+        [] -> []
+        h :: t ->
+            if h == i then t
+            else h :: dropFirstInt i t
+
 {- our implementation of Json.extras.apply
    for encoding objects of arbitrary arity
    usually the Decoder a will be ("var" := val) -}

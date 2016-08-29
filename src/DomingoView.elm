@@ -14,8 +14,19 @@ import String
 
 {- button generators -}
 {- for buttons on hand cards -}
-buttonGenHand pos =
-  [tr [] [], button [ onClick (SubmitMove (PlayCard pos)) ] [ text ({-(toString pos) ++ -}" play") ]]
+-- TODO make this work by ID also, rather than pos (for logging ease)
+playButtonGenHand cid =
+  [tr [] [], button [ onClick (SubmitMove (PlayCard cid)) ] [ text "play" ]]
+
+-- for "pick a card" from hand prompts
+chooseButtonGenHand isOptional pos cid =
+    let move = 
+            if isOptional then
+                POMaybeInt (Just cid)
+            else POInt cid
+    in
+    [ tr [] [], button [ onClick (SubmitMove (PromptResponse move)) ] [text "select"]]
+    
 
 {- for buttons on shop cards (TODO) -}
 
@@ -34,13 +45,11 @@ displayCard cId footer =
 
 {- display your hand -}
 {- outer div, then inner divs for each card. each card gets a name, description, and a play button -}
-displayHand cards =
-  table []
-        (fst <| List.foldl (\cId (list, len) -> (list ++ [displayCard cId (buttonGenHand len), td [] []], len + 1))
-                            ([], 0) cards)
+{- TODO: if we have a "choose" prompt give each a "choose" button -}
+displayHand cards cardFooter =
+  table [] <| List.foldl (\cId list -> list ++ [displayCard cId (cardFooter cId), td [] []]) [] cards
 
 {- button for shop -}
-{- TODO add player ID to the message -}
 buttonGenShop cId =
   [tr [] [], button [ onClick (SubmitMove (BuyCard cId))]
                     [ text "Buy" ]]
@@ -102,13 +111,62 @@ displayResources gameState currPlayer ourTurn =
                     ++ (toString (List.length (gameState.purchases)) ++ " cards have been bought this turn"))
         ]
 -}
-    
+
+displayMaybePrompt mp =
+    div [] <|
+        case mp of
+            Just gp ->
+                -- TODO add more description?
+                [text gp.desc, br [] []] ++
+                    case gp.spec of
+                        AcceptDecline ->
+                            [ button [(onClick (SubmitMove (PromptResponse (POBool True))))]
+                                  [text "Accept"], br [] []
+                            , button [(onClick (SubmitMove (PromptResponse (POBool False))))]
+                                [text "Decline"]]
+
+                        -- needs a decline button
+                        ChooseCard decl cs ->
+                            if decl then
+                                let footer cId = [ tr [] []
+                                                 , button [onClick (SubmitMove (PromptResponse
+                                                                                    (POMaybeInt (Just cId))))]
+                                                     [text "Choose"]]
+                                in
+                                    List.foldl (\cId l -> l ++ [displayCard cId (footer cId)]) [] cs ++
+                                        [br [] []
+                                        , button [onClick (SubmitMove (PromptResponse (POMaybeInt Nothing)))]
+                                            [text "Decline"]]
+                                             
+                                        
+                            else
+                                let footer cId = [ tr [] []
+                                                 , button [onClick (SubmitMove (PromptResponse
+                                                                                    (POInt cId)))]
+                                                     [text "Choose"]]
+                                in
+                                    List.foldl (\cId list -> list ++ [displayCard cId (footer cId)]) [] cs
+                                                
+                                
+
+                        -- TODO: have a way to make displayHand do something
+                        -- TODO also this needs a decline button if b = True
+                        ChooseHandCard decl ->
+                            if decl then
+                                [button [onClick (SubmitMove (PromptResponse (POMaybeInt Nothing)))] [text "Decline (Choosing From Hand)"]]
+                            else []
+                                
+                        -- this should never happen (corresponds to displaying an "unknown" prompt
+                        _ -> []
+                        
+            Nothing -> []
     
 -- display the state of the game
 -- second argument is a list of local players, to determine if we
 -- should show the buttons
-displayGameState gameState localPlayers =
+displayGameState gameState' localPlayers =
     let
+        gameState = unwrapGameState gameState'
         currPid = dflHead gameState.playerOrder dummyId
         currPlayer = dflGet currPid gameState.players dummy
         ourTurn = Set.member currPid localPlayers
@@ -124,7 +182,7 @@ displayGameState gameState localPlayers =
                       , text ("It is currently " ++ toString currPid ++ "'s turn.")
                       , br [] []] ++
                       [text ("Current Phase: " ++ toString gameState.phase), br [] []] ++
-                      [if ourTurn then displayHand currPlayer.hand
+                      [if ourTurn then displayHand currPlayer.hand playButtonGenHand
                        else text "not your turn."
                       , br [] []] ++
                       [displayResources gameState currPlayer ourTurn
@@ -133,10 +191,9 @@ displayGameState gameState localPlayers =
                       , br [] []] ++
                       (if ourTurn then
                            [button [onClick (SubmitMove EndPhase)] [text "end phase/turn"]]
-                       else []) ++
-                      [br [] []]
-                          
-                      -- TODO: include more diagnostic/informative info about what happened
+                       else []) ++ [br [] []] ++
+                      [displayMaybePrompt gameState.prompt, br [] []]
+                      -- TODO: include more diagnostic/informative info about what happened; e.g. log
 
 {-
  -}
@@ -177,8 +234,7 @@ displayPlayersConnected connected =
                                   ]
                              ) connected
 
--- display button to start game if you are master
--- display game config options if you are master
+-- display button to start game, config options, if you are master
 displayMasterOptions clcState =
     div []
         [ button [onClick StartGame] [text "start game"], br [] []
@@ -194,12 +250,6 @@ displayMainDiv clientState =
                 [ h1 [] [text "Domingo"]
                 , text "Who's playing? (If no players, you are a specator)", br [] []
                 , displayPlayerIdInputs cpgs, br [] [], br [] []
-      {-
-                , text "Are you hosting? (Exactly 1 computer per game must.) ",
-                    input [type' "checkbox"
-                          , checked cpgs.isMasterInput
-                          , onCheck UpdateIsMaster] [], br [] []
-       -}
                 , input [onInput UpdateGameId, placeholder "Game ID"
                         , value (strOfMaybe cpgs.gidInput)] []
                 , br [] []

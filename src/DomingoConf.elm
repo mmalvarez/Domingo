@@ -22,44 +22,61 @@ startingPlayerState =
 handSize = 5
 
 {- initial numbers for cards -}
+{- TODO all of these but kingdom cards depend on number of players -}
 estateHowMany : Int
 estateHowMany = 1
 
 copperHowMany : Int
 copperHowMany = 50
 
-woodcutterHowMany : Int
-woodcutterHowMany = 10
+silverHowMany : Int
+silverHowMany = 40
 
-villageHowMany : Int
-villageHowMany = 10
+goldHowMany : Int
+goldHowMany = 30
+
+actionHowMany : Int                
+actionHowMany = 10
 
 -- if the rng is ever set to this value it will be assumed uninitialized
 rngBogusValue : Int
 rngBogusValue = 0
 
+-- TODO make this configurable!!
+startingGameState' =
+    { players = Dict.fromList [(dummyId, startingPlayerState)]
+    , playerOrder = [dummyId]
+    , shop = Dict.fromList [(copperId, copperHowMany)
+                           ,(silverId, silverHowMany)
+                           ,(goldId, goldHowMany)
+                           ,(estateId, estateHowMany)
+                           ,(woodcutterId, actionHowMany)
+                           ,(villageId, actionHowMany)
+                           ]
+    , trash = []
+    , actions = 0, coin = 0, buys = 0
+    , purchases = [], plays = []
+    , phase = PreGamePhase
+    , rng = rngBogusValue
+    , gameId = ""
+    , prompt = Nothing
+    , cont = Nothing
+    }
+
 -- TODO move this out, let users apply changes to it
 startingGameState : GameState
 startingGameState =
-  { players = Dict.fromList [(dummyId, startingPlayerState)]
-  , playerOrder = [dummyId]
-  , shop = Dict.fromList [(estateId, estateHowMany), (copperId, copperHowMany),
-                          (woodcutterId, woodcutterHowMany), (villageId, villageHowMany)]
-  , trash = []
-  , actions = 0, coin = 0, buys = 0
-  , purchases = [], plays = []
-  , phase = PreGamePhase
-  , rng = rngBogusValue
-  , gameId = ""
-  , prompt = NoPrompt
-  }
+  GameState startingGameState'
 
 {- predicate checking for game over (called after each purchase) -}
+{- game ends if there are no more Provinces
+   (TODO: add 3-pile ending)
+ -}
 gameOver : GameState -> Bool
-
-{- game ends if there are no more estates -}
-gameOver state =
-  let numEstates = dflGet estateId state.shop 0 in
-  if numEstates == 0 then True
-    else False
+gameOver gst =
+    case gst of
+        GameState st ->
+            let numEstates = dflGet provinceId st.shop 0 in
+            if numEstates == 0 then True
+            else False
       

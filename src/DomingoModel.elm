@@ -13,6 +13,7 @@ import DomingoLib exposing (..)
 type alias PlayerId = String
 type alias CardId = Int
 type alias GameId = String
+type alias PromptId = Int
 
 {- state of each player in a game -}
 -- TODO include a player id field?
@@ -95,6 +96,8 @@ gamePhaseEncoder gp =
             BuyPhase -> 4
             EndGamePhase -> 5
 
+
+                            
 {- TODO eventually we should support serialization of cards -}                            
 type alias Card =
     { idn : CardId
@@ -108,34 +111,110 @@ type alias Card =
     , cost : Int {- how much does it cost to buy from the shop? -}
     {- what happens when you play it as an action -}
     , playedEffect : Maybe (GameState -> GameState)
+    {- after we play the card, where does it go/what else happens -}
+    , afterPlayEffect : GameState -> GameState
     {- to do: some way of specifying reactions when it's in your hand -}
     {- to do: some way of specifying reactions when it's on the field -}
     }
 
-{- Describes additional choices the current player sometimes must take -}
-{- Eventually this will have "pick card from list" etc -}
-type GamePrompt = NoPrompt -- "normal" state, no prompt
-                | AcceptDecline -- for "may" effects
+-- we also need encoder/decoder for this
+type alias GamePrompt =
+    { spec : PromptSpec
+    , playerId : PlayerId
+    , desc : String -- UI description; TODO have it be an HTML?
+    }
 
-gamePromptDecoder : Decoder GamePrompt
+gamePromptEncoder : Maybe GamePrompt -> Value
+gamePromptEncoder mgp =
+    case mgp of
+        Nothing -> Encode.object [("type", Encode.string "gamePrompt_nothing")]
+        Just gp -> Encode.object
+                   [("type", Encode.string "gamePrompt_just")
+                   ,("spec", promptSpecEncoder gp.spec)
+                   ,("playerId", Encode.string gp.playerId)
+                   ,("desc", Encode.string gp.desc)]
+
+gamePromptDecoder : Decoder (Maybe GamePrompt)
 gamePromptDecoder =
-    Decode.int `andThen` \i -> case i of
-                                        0 -> succeed NoPrompt
-                                        1 -> succeed AcceptDecline
-                                        _ -> fail "invalid prompt type"
-                  
-gamePromptEncoder : GamePrompt -> Value
-gamePromptEncoder gp =
-    Encode.int <|
-        case gp of
-            NoPrompt -> 0
-            AcceptDecline -> 1
+    ("type" := string) `andThen` \s ->
+        case s of
+            "gamePrompt_just" ->
+                    object3 (\x y z -> Just (GamePrompt x y z))
+                        ("spec" := promptSpecDecoder)
+                        ("playerId" := string)
+                        ("desc" := string)
+                            
+            _ -> succeed Nothing
+
+-- describes the types of prompts we might ask user
+-- NB strings are how we tell the user what the prompt means
+type PromptSpec =
+      AcceptDecline
+    -- Bool in the following two is whether to allow user to decline
+    | ChooseCard Bool (List CardId)
+    | ChooseHandCard Bool
+    | Unknown
+
+promptSpecEncoder : PromptSpec -> Value
+promptSpecEncoder p =
+    case p of
+        AcceptDecline -> Encode.object [("type", Encode.string "acceptDecline")]
+        ChooseCard b cs -> Encode.object
+                           [("type", Encode.string "chooseCard")
+                           ,("declinable", Encode.bool b)
+                           ,("cards", Encode.list (List.map Encode.int cs))]
+        ChooseHandCard b ->
+            Encode.object [("type", Encode.string "chooseHandCard")
+                          ,("declinable", Encode.bool b)]
+
+        Unknown -> Encode.object [("type", Encode.string "unknown")]
+
+promptSpecDecoder : Decoder PromptSpec
+promptSpecDecoder =
+    ("type" := string) `andThen` \s ->
+        case s of
+            "acceptDecline" -> succeed AcceptDecline
+            "chooseCard" -> object2 ChooseCard ("declinable" := bool) ("cards" := list int)
+            "chooseHandCard" -> object1 ChooseHandCard ("declinable" := bool)
+            _ -> succeed Unknown
+
+-- this is used to submit prompt responses to the server
+-- TODO use failure instead of "unknown"
+type PromptOutput =
+      POBool Bool
+    | POInt Int
+    | POMaybeInt (Maybe Int)
+    | POUnknown
+
+promptOutputEncoder : PromptOutput -> Value
+promptOutputEncoder po =
+    case po of
+        POBool b -> Encode.object [ ("type", Encode.string "bool")
+                                  , ("value", Encode.bool b) ]
+        POInt i -> Encode.object [ ("type", Encode.string "int")
+                                 , ("value", Encode.int i)]
+        POMaybeInt (Just i) -> Encode.object [ ("type", Encode.string "maybeInt_just")
+                                             , ("value", Encode.int i) ]
+        POMaybeInt Nothing -> Encode.object [ ("type", Encode.string "maybeInt_nothing") ]
+
+        POUnknown -> Encode.object [("type", Encode.string "unknown")]
+                              
+
+promptOutputDecoder : Decoder PromptOutput
+promptOutputDecoder = ("type" := string) `andThen` \s ->
+                      case s of
+                          "bool" -> object1 POBool ("value" := bool)
+                          "int" -> object1 POInt ("value" := int)
+                          "maybeInt_just" -> object1 (\x -> POMaybeInt (Just x)) ("value" := int)
+                          "maybeInt_nothing" -> succeed (POMaybeInt Nothing)
+                          _ -> succeed POUnknown
 
 {- State of a Domingo game in progress.
    This (eventually, deltas to it) are what get serialized over
    the wire and sent to clients
+   WITH the exception of the prompt, which contains a continuation
 -}
-type alias GameState =
+type GameState = GameState
     { gameId : GameId
     , players : Dict.Dict PlayerId PlayerState
     , playerOrder : List PlayerId
@@ -149,9 +228,41 @@ type alias GameState =
     , plays : List CardId {- cards played this turn that will enter player's discard at end of turn -}
     , phase : GamePhase
     , rng : Int
-    , prompt : GamePrompt -- if the current player must take some kind of special action
+    -- if the current player must take some kind of special action
+    -- PlayerId is whose action it is, String is a description
+    , prompt : Maybe GamePrompt 
+    -- used to modify the games state based on prompt output
+    , cont : Maybe (PromptOutput -> GameState) -- this will always be None on the remote
     }
 
+-- helper for deconstructing game states
+unwrapGameState gs' =
+    case gs' of
+        GameState gs -> gs
+
+-- convenience wrapper for creating gamestates, used e.g. in decoder
+makeGameState gameId players playerOrder shop trash actions coin buys purchases plays phase rng prompt cont =
+    GameState { gameId = gameId
+              , players = players
+              , playerOrder = playerOrder
+              , shop = shop
+              , trash = trash
+              , actions = actions
+              , coin = coin
+              , buys = buys
+              , purchases = purchases
+              , plays = plays
+              , phase = phase
+              , rng = rng
+              , prompt = prompt
+              , cont = cont }
+
+-- unwrap the game state
+getGameState ogst =
+    case ogst of
+        GameState gst -> gst
+
+{- Client state, minus the prompt (which cannot be reified) -}
 {- For chaining client actions -}
 type alias ClientTask = Task.Task String ClientState
 
@@ -236,11 +347,11 @@ type Msg =
 
 {- Description of possible moves; used to serialize/deserialize moves between
    server and clients -}
-type PlayDesc = PlayCard Int
-              | BuyCard Int
+type PlayDesc = PlayCard CardId
+              | BuyCard CardId
               | EndPhase
-              | Accept
-              | Decline
+              | PromptResponse PromptOutput
+
 type alias MoveDesc = {playerId : PlayerId, play : PlayDesc}
 
 moveDescEncoder : MoveDesc -> Value
@@ -253,12 +364,11 @@ moveDescEncoder md = case md.play of
                                                     ,("player", Encode.string md.playerId)]
                          EndPhase -> Encode.object [("moveType", Encode.string "endPhase")
                                                     ,("player", Encode.string md.playerId)]
-                         Accept -> Encode.object [("moveType", Encode.string "accept")
-                                                        ,("player", Encode.string md.playerId)]
-                         Decline -> Encode.object [("moveType", Encode.string "decline")
-                                                         ,("player", Encode.string md.playerId)]
-
--- OK this gets slightly more annoying now that we have to pull it out
+                         PromptResponse po ->
+                             Encode.object [("moveType", Encode.string "promptResponse")
+                                           ,("output", promptOutputEncoder po)
+                                           ,("player", Encode.string md.playerId)]
+                                           
 -- TODO: under construction
 moveDescDecoder : Decoder MoveDesc
 moveDescDecoder =
@@ -270,8 +380,10 @@ moveDescDecoder =
                 "play" -> object1 (mkWithCardInput PlayCard) ("card" := int)
                 "buy" -> object1 (mkWithCardInput BuyCard) ("card" := int)
                 "endPhase" -> succeed {play = EndPhase, playerId = playerId}
-                "accept" -> succeed {play = Accept, playerId = playerId}
-                "decline" -> succeed {play = Decline, playerId = playerId}
+                "promptResponse" ->
+                    object1 (\po -> {play = PromptResponse po, playerId = playerId})
+                        ("output" := promptOutputDecoder)
+                    
                 _ -> fail "invalid move"
                  
 {- Type for messages sent from client to server -}
@@ -377,9 +489,11 @@ shopEncoder : Dict.Dict CardId Int -> Value
 shopEncoder d =
     Encode.object <| List.map (\(k,v) -> (toString k, Encode.int v)) <| Dict.toList d 
 
+-- this needs to change
+-- WE need to wrap GameState
 gameStateDecoder : Decoder GameState
 gameStateDecoder =
-    (succeed GameState)
+    (succeed makeGameState)
         |: ("gameId" := string)
         |: ("players" := dict playerStateDecoder {- |> Decode.map dictKeysMap -})
         |: ("playerOrder" := list string)
@@ -393,27 +507,30 @@ gameStateDecoder =
         |: ("phase" := gamePhaseDecoder)
         |: ("rng" := int)
         |: ("prompt" := gamePromptDecoder)
+        |: ("cont" := succeed Nothing) -- we can't serialize code, nor do we need to
 
 playersEncoder : Dict.Dict PlayerId PlayerState -> Value
 playersEncoder d =
     Encode.object <| List.map (\(k,v) -> (k, playerStateEncoder v)) <| Dict.toList d
 
 gameStateEncoder : GameState -> Value
-gameStateEncoder gs =
-    Encode.object [ ("gameId", Encode.string gs.gameId)
-                  , ("players", playersEncoder gs.players)
-                  , ("playerOrder", Encode.list (List.map Encode.string gs.playerOrder))
-                  , ("shop", shopEncoder gs.shop)
-                  , ("trash", Encode.list (List.map Encode.int gs.trash))
-                  , ("actions", Encode.int gs.actions)
-                  , ("coin", Encode.int gs.coin)
-                  , ("buys", Encode.int gs.buys)
-                  , ("purchases", Encode.list (List.map Encode.int gs.purchases))
-                  , ("plays", Encode.list (List.map Encode.int gs.plays))
-                  , ("phase", gamePhaseEncoder gs.phase)
-                  , ("rng", Encode.int gs.rng)
-                  , ("prompt", gamePromptEncoder gs.prompt)
-                  ]
+gameStateEncoder gso =
+    case gso of
+        GameState gs ->
+            Encode.object [ ("gameId", Encode.string gs.gameId)
+                          , ("players", playersEncoder gs.players)
+                          , ("playerOrder", Encode.list (List.map Encode.string gs.playerOrder))
+                          , ("shop", shopEncoder gs.shop)
+                          , ("trash", Encode.list (List.map Encode.int gs.trash))
+                          , ("actions", Encode.int gs.actions)
+                          , ("coin", Encode.int gs.coin)
+                          , ("buys", Encode.int gs.buys)
+                          , ("purchases", Encode.list (List.map Encode.int gs.purchases))
+                          , ("plays", Encode.list (List.map Encode.int gs.plays))
+                          , ("phase", gamePhaseEncoder gs.phase)
+                          , ("rng", Encode.int gs.rng)
+                          , ("prompt", gamePromptEncoder gs.prompt)
+                          ]
 
 -- decode server lobby responses
 -- again, maybe also use 'fail' here

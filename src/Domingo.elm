@@ -20,6 +20,7 @@ import DomingoCards exposing(..)
 import DomingoView exposing (..)
 import DomingoConf exposing(..)
 
+-- TODO limit number of players in game
 
 {- TODO: Fix div structure of display functions -}
 {- TODO: implement initial deal more sanely,
@@ -52,11 +53,13 @@ pushMsg m =
     toServer <| Encode.encode 0 <| clientToServerMsgEncoder m
 
 updateAndPushMasterState : ClientState -> GameState -> (ClientState, Cmd Msg)
-updateAndPushMasterState cs gs =
-    case cs of
-        ClientPlayMaster cp ->
-            (ClientPlayMaster {cp | gameState = gs}, pushMsg (MasterPushCMsg gs.gameId gs))
-        _ -> (cs, Cmd.none)
+updateAndPushMasterState cs ogs =
+    case ogs of
+        GameState gs ->
+            case cs of
+                ClientPlayMaster cp ->
+                    (ClientPlayMaster {cp | gameState = ogs}, pushMsg (MasterPushCMsg gs.gameId ogs))
+                _ -> (cs, Cmd.none)
 
 -- send an internal message
 sendInternalMsg : Msg -> Cmd Msg
@@ -90,7 +93,7 @@ update msg state =
                             else cst.pidsInput ++ [p]
                         else cst.pidsInput
         in
-        (ClientPreGame {cst | pidsInput = pidsInput'}, Cmd.none)
+        (ClientPreGame {cst | newPidInput = Nothing, pidsInput = pidsInput'}, Cmd.none)
 
     (RemovePlayer pId, ClientPreGame cst) ->
         let pidsInput' =
@@ -139,7 +142,7 @@ update msg state =
                     _ ->
                         -- make sure player IDs are unique
                         let startState =
-                                {startingGameState | playerOrder = clst.playerIds
+                                {startingGameState' | playerOrder = clst.playerIds
                                 , players = initPlayers startingPlayerState clst.playerIds
                                 , gameId = clst.gameId}
                                 
@@ -150,7 +153,7 @@ update msg state =
                                                 Just seed -> {startState | rng = seed}
                         in
                             (ClientPlayMaster { gameId = clst.gameId
-                                              , gameState = startStateRng
+                                              , gameState = GameState startStateRng
                                               , message = clst.message
                                               , localPlayerIds = Set.fromList clst.localPlayerIds
                                               }
@@ -182,11 +185,11 @@ update msg state =
     {- I am concerned with how this interacts with logging -}
     (FinishStartingGame newRng, ClientPlayMaster cp) ->
         let cp' =
-                if cp.gameState.rng == rngBogusValue
+                if (getGameState cp.gameState).rng == rngBogusValue
                 then
                     {cp | gameState =
-                         let cpGs = cp.gameState in
-                         {cpGs | rng = newRng}}
+                         let cpGs = getGameState cp.gameState in
+                         GameState {cpGs | rng = newRng}}
                 else
                     cp
         in
@@ -196,28 +199,35 @@ update msg state =
     -- if we are master, do the move locally, and then push update
     (SubmitMove pd, ClientPlayMaster cp) ->
         -- use tasks here
-        let currentPlayer = dflHead cp.gameState.playerOrder dummyId in
+        let currentPlayer = dflHead (getGameState cp.gameState).playerOrder dummyId in
         (ClientPlayMaster cp, sendInternalMsg (DoMove {play = pd, playerId = currentPlayer}))
 
     -- if not we push our move to the server
     (SubmitMove pd, ClientPlaySub cps) ->
         -- if we don't have a game state (from server) yet, do nothing
         -- (we could also keep track of players locally, but unnecessary i think)
+        -- TODO if we're not careful on the server side this allows forgery of moves
         
-        let currentPlayer = dflHead cps.gameState.playerOrder dummyId in
+        let
+            currentPlayer = dflHead (getGameState cps.gameState).playerOrder dummyId
+        in
         (ClientPlaySub cps, pushMsg (MakeMoveCMsg cps.gameId {play = pd, playerId = currentPlayer}))
 
     (DoMove md, ClientPlayMaster cp) ->
         case md.play of
-            PlayCard pos ->
+            -- TODO this used to be Pos
+            -- we need to check if the card ID is actually in their hand
+            PlayCard cId ->
                 let
-                    gst = cp.gameState
+                    ogst = cp.gameState
+                    gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
-                    cId = dflNth pos player.hand urId
                     card = dflGet cId allCards urCard
-                    newHand = dflDropNth pos player.hand
+                    -- we need a function to drop one of a card
+                    newHand = dropFirstInt cId player.hand
                 in
+                    -- TODO add in after-play effects. We need to pattern match on it
                     case gst.phase of
                         ActionPhase ->
                             case card.playedEffect of
@@ -228,33 +238,34 @@ update msg state =
                                     then (state, Cmd.none)
                                     {- calculate the state after deducting card costs -}
                                     else let gst' =
-                                                 {gst | plays = cId :: gst.plays
+                                                 {gst | plays = {-cId ::-} gst.plays
                                                       , actions = gst.actions - 1
                                                       , players =
                                                           update' pId (\p -> {p | hand = newHand })
                                                               gst.players
                                                  }
-                                         in gst' |> updateAndPushMasterState state
+                                         in GameState gst' |> card.afterPlayEffect |> updateAndPushMasterState state
                       
                         CoinPhase ->
                             {- make sure we don't play valueless cards as coins -}
                             if card.spentValue <= 0 then (state, Cmd.none)
                             else
                                 let 
-                                    gst' =  {gst | plays = cId :: gst.plays
+                                    gst' =  {gst | plays = {-cId ::-} gst.plays
                                             , coin =  gst.coin + card.spentValue
                                             , players = update' pId (\p -> {p | hand = newHand})
                                                         gst.players
                                             }
                      
-                                in gst' |> updateAndPushMasterState state
+                                in GameState gst' |> card.afterPlayEffect |> updateAndPushMasterState state
 
                         {- not the right time to play a card -}
                         _ -> (state, Cmd.none)
 
             BuyCard cId ->
                 let
-                    gst = cp.gameState
+                    ogst = cp.gameState
+                    gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
                     card = dflGet cId allCards urCard
@@ -270,7 +281,7 @@ update msg state =
                                         , shop = update' cId (\i -> i - 1) gst.shop
                                         }
                                 in
-                                    if gameOver gst'
+                                    if gameOver (GameState gst')
                                     then
                                         {- make sure the card they bought makes it into their deck
                                            if game is about to end -}
@@ -283,9 +294,9 @@ update msg state =
                                                                                         gst'.plays
                                                                             , hand = []}) gst'.players
                                                     }
-                                        in gst'' |> updateAndPushMasterState state
+                                        in GameState gst'' |> updateAndPushMasterState state
 
-                                    else gst' |> updateAndPushMasterState state
+                                    else GameState gst' |> updateAndPushMasterState state
 
                             else (state, Cmd.none)
 
@@ -293,13 +304,14 @@ update msg state =
 
             EndPhase ->
                 let
-                    gst = cp.gameState
+                    ogst = cp.gameState
+                    gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
                 in
                     case gst.phase of
-                        ActionPhase -> {gst | phase = CoinPhase} |> updateAndPushMasterState state
-                        CoinPhase -> {gst | phase = BuyPhase} |> updateAndPushMasterState state
+                        ActionPhase -> GameState {gst | phase = CoinPhase} |> updateAndPushMasterState state
+                        CoinPhase -> GameState {gst | phase = BuyPhase} |> updateAndPushMasterState state
                         BuyPhase ->
                             {- first, add buys and plays back into discard pile, and reset resource values -}
                             let gst' = {gst | players =
@@ -315,13 +327,27 @@ update msg state =
                                             , phase = ActionPhase
                                        }
                             in
-                                gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateAndPushMasterState state
+                                GameState gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateAndPushMasterState state
 
                         _ -> (state, Cmd.none)
 
-            -- for now, these are unused.
-            Accept -> (state, Cmd.none)
-            Decline -> (state, Cmd.none)
+            PromptResponse po ->
+                let ogst = cp.gameState
+                    gst = getGameState ogst
+                    pId = dflHead gst.playerOrder dummyId
+                    player = dflGet pId gst.players dummy
+                in
+                    -- TODO: need to fix this get new game state, from running continuation
+                    -- need to check shit
+                    -- need to distinguish between noop and ill typed input
+                    -- TODO: make sure that prompts don't get erased if they provide bad input
+                    case (gst.prompt, gst.cont) of
+                        (Just _, Just c) ->
+                            let newState = c po in
+                            updateAndPushMasterState state newState
+
+                        -- no prompt? then ignore
+                        (_, _) -> (state, Cmd.none)
 
                 
     -- handle asynchronous server messages
@@ -356,7 +382,7 @@ update msg state =
                                 case cls.masterConfigState of
                                     Nothing ->
                                         -- make sure the ID is correct
-                                        if cls.gameId == gs.gameId
+                                        if cls.gameId == (getGameState gs).gameId
                                         then (ClientPlaySub { gameId = cls.gameId
                                                             , gameState = gs
                                                             , message = Just msg
@@ -371,7 +397,7 @@ update msg state =
                             ClientPlaySub cps ->
                                 let newGameState =
                                         -- check to make sure the game ID is correct
-                                        if cps.gameId == gs.gameId
+                                        if cps.gameId == (getGameState gs).gameId
                                         then gs
                                         else cps.gameState
                                 in
@@ -389,7 +415,7 @@ update msg state =
                             ClientPlayMaster cpms ->
                                 -- make sure it is that player's turn
                                 -- TODO: do somthing to prevent spoofing
-                                if List.head cpms.gameState.playerOrder == Just md.playerId
+                                if List.head (getGameState cpms.gameState).playerOrder == Just md.playerId
                                 then (state, sendInternalMsg (DoMove md))
                                 else (state, Debug.log "WRONG PLAYER" Cmd.none)
 
