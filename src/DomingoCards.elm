@@ -34,7 +34,7 @@ makeVictory : CardId -> Int -> Int -> Card
 makeVictory cId victory cost =
     {urCard | idn = cId
     , kind = "Victory"
-    , victory = victory
+    , victory = \_ -> victory
     , cost = cost }
 
 -- NB this action has no PlayedEffect but _does_ have a default afterPlay
@@ -81,7 +81,7 @@ estateCard =
            , text = Just "Worth 1 Victory"
            , kind = "Victory"
            , cost = 2
-           , victory = 1
+           , victory = \_ -> 1
   }
 
 duchyId = 1010
@@ -93,7 +93,7 @@ duchyCard =
     , text = Just "Worth 3 Victory"
     , kind = "Victory"
     , cost = 5
-    , victory = 3 }
+    , victory = \_ -> 3 }
 
 provinceId = 1020
              
@@ -103,7 +103,21 @@ provinceCard =
     , text = Just "Worth 6 Victory"
     , kind = "Victory"
     , cost = 8
-    , victory = 6 }
+    , victory = \_ -> 6 }
+
+gardensId = 1100
+
+gardensCard =
+    { urCard | idn = gardensId
+    , name = "Gardens"
+    , text = Just "Worth 1 victory per 10 cards in your deck at end of game (round down)"
+    , kind = "Victory"
+    , cost = 4
+    , victory = \ps ->
+                let cards = ps.deck ++ ps.discard ++ ps.hand
+                    count = List.length cards
+                in count // 10
+    }
 
 curseId = 1005
 
@@ -113,7 +127,7 @@ curseCard =
     , text = Just "Worth -1 Victory"
     , kind = "Curse"
     , cost = 0
-    , victory = -1 }
+    , victory = \_ -> -1 }
 
 -- action cards
 woodcutterId = 2000
@@ -201,7 +215,68 @@ throneRoomCard =
     , text = Just "Choose an action card from your hand. Play it twice."
     , kind = "Action"
     , cost = 4
-    , playedEffect = Nothing} -- TODO fix, need a way to pick a card
+    , playedEffect =
+        Just (\ost ->
+                  case ost of
+                      GameState st ->
+                          let currentId = dflHead st.playerOrder dummyId
+                              currentPlayer = dflGet currentId st.players dummy
+                              currentHand = currentPlayer.hand
+                              -- filter for actions
+                              actionCards =
+                                  List.filter (\cId ->
+                                                   let card = dflGet cId allCards urCard in
+                                                   case card.playedEffect of
+                                                       Just _ -> True
+                                                       _ -> False
+                                              ) currentHand
+                          in
+                              -- make sure the player has an action!
+                              if actionCards == []
+                              then ost
+                              else
+                                  -- set prompt: choose action card from hand
+                                  -- continuation: play card twice
+                                  GameState {st |
+                                             prompt = Just { spec = ChooseHandCard False actionCards
+                                                           , playerId = currentId
+                                                           , desc = "Choose a card to play twice"
+                                                           }
+                                            , cont = Just (\out st' ->
+                                                               case (out, st') of
+                                                                   (POInt cId, GameState st) ->
+                                                                       -- DANGER this is a sketch hack
+                                                                       -- potentially... we are not using
+                                                                       -- the st' we just got passed.
+                                                                       let newHand = dropFirstInt cId currentHand
+                                                                           card = dflGet cId allCards urCard
+                                                                       in
+                                                                           -- make sure they gave a valid hand card
+                                                                           -- and that it's an action
+                                                                           case (List.member cId currentHand
+                                                                                ,card.playedEffect) of
+                                                                               (True, Just eff) ->
+                                                                                   let newStatePrePlay =
+                                                                                       -- update player's hand.
+                                                                                       -- also delete this cont
+                                                                                       GameState {st | players = update' currentId
+                                                                                                      (\p -> {p | hand = newHand})
+                                                                                                      st.players
+                                                                                                 , prompt = Nothing
+                                                                                                 , cont = Nothing
+                                                                                                 }
+                                                                                   in
+                                                                                       eff (eff newStatePrePlay)
+                                                                                   
+
+
+                                                                               (_, _) -> st'
+                                                                       
+                                                                   (_, _) -> st'
+                                                          )
+                                            }
+             )
+    }
 
 laboratoryId = 2007
 
@@ -240,12 +315,38 @@ workshopCard =
     , text = Just "Gain a card costing up to 4 coins"
     , kind = "Action"
     , cost = 3
-    , playedEffect = Nothing } -- TODO fix, need a gain primitive, choice primitive
+    , playedEffect = Just (\ost ->
+                          case ost of
+                              GameState st ->
+                                  let currentId = dflHead st.playerOrder dummyId
+                                      availCards =
+                                          Dict.keys <|
+                                              Dict.filter (\_ num -> num > 0) st.shop
+                                      cardsUpToFour = List.filter (\cId ->
+                                                                       let card = dflGet cId allCards urCard in
+                                                                       card.cost <= 4) availCards
+                                  in
+                                      (GameState {st |
+                                                  prompt = Just { spec = ChooseShopCard False cardsUpToFour
+                                                                , playerId = currentId
+                                                                , desc = "Choose a card to gain"
+                                                                }
+                                                 , cont = Just (\out st' ->
+                                                                    case (out, st') of
+                                                                        (POInt cId, GameState st) ->
+                                                                            -- make sure it's valid
+                                                                            if List.member cId cardsUpToFour
+                                                                            then
+                                                                                gainCurrentPlayerCard cId st'
+                                                                            else st'
 
--- need 2 more.
+                                                                        (_, _) ->
+                                                                            st'
+                                                               )
+                                                 })
+                          )
+    }
 
--- moneylender
--- gardens
 
 {- global dictionary used to look up cards by ID -}
 
@@ -253,7 +354,22 @@ allCards : Dict.Dict CardId Card
 allCards = Dict.fromList
             [ (urId, urCard)
             , (copperId, copperCard)
+            , (silverId, silverCard)
+            , (goldId, goldCard)
             , (estateId, estateCard)
+            , (duchyId, duchyCard)
+            , (provinceId, provinceCard)
+            , (gardensId, gardensCard)
             , (woodcutterId, woodcutterCard)
             , (villageId, villageCard)
+            , (smithyId, smithyCard)
+            , (marketId, marketCard)
+            , (festivalId, festivalCard)
+            , (witchId, witchCard)
+-- TODO in order to make throne room and workshop work there is a circularity we must break
+-- continuation should take an allCards argument.
+--            , (throneRoomId, throneRoomCard)
+            , (laboratoryId, laboratoryCard)
+            , (councilRoomId, councilRoomCard)
+--            , (workshopId, workshopCard)
             ]
