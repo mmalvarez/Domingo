@@ -19,9 +19,9 @@ gameStateIdFn gs = gs
 {- better to use the following primitives though -}
 
 {- primitives for building cards -}
-makeCoin : CardId -> Int -> Int -> Card
+-- makeCoin : CardId -> Int -> Int -> Card
 makeCoin cId value cost =
-    { urCard | idn = cId
+    { uc' | idn = cId
     , spentValue = value
     , cost = cost
     , kind = "Money"
@@ -30,17 +30,17 @@ makeCoin cId value cost =
 
 -- NB we can't play victory cards so no need for after play effect
 -- TODO worry about this later, because no after play for victory
-makeVictory : CardId -> Int -> Int -> Card
+-- makeVictory : CardId -> Int -> Int -> Card
 makeVictory cId victory cost =
-    {urCard | idn = cId
+    {uc' | idn = cId
     , kind = "Victory"
     , victory = \_ -> victory
     , cost = cost }
 
 -- NB this action has no PlayedEffect but _does_ have a default afterPlay
-makeAction : CardId -> Int -> Card
+-- makeAction : CardId -> Int -> Card
 makeAction cId cost =
-    {urCard | idn = cId
+    {uc' | idn = cId
     , cost = cost
     , kind = "Action"
     , afterPlayEffect = putInPlays cId}
@@ -52,6 +52,7 @@ copperId = 0
 
 copperCard =
     let c = makeCoin copperId 1 0 in
+    Card
     {c | name = "Copper"
     , text = Just "Worth 1 Coin"}
 
@@ -60,6 +61,7 @@ silverId = 10
 silverCard : Card
 silverCard =
     let c = makeCoin silverId 2 3 in
+    Card
     {c | name = "Silver"
     , text = Just "Worth 2 Coin" }
                   
@@ -68,6 +70,7 @@ goldId = 20
 goldCard : Card
 goldCard =
     let c = makeCoin goldId 3 6 in
+    Card
     {c | name = "Gold"
     , text = Just "Worth 3 Coin"}
 
@@ -76,19 +79,21 @@ estateId = 1000
 
 estateCard : Card
 estateCard =
-  { urCard | idn = estateId
-           , name = "Estate"
-           , text = Just "Worth 1 Victory"
-           , kind = "Victory"
-           , cost = 2
-           , victory = \_ -> 1
-  }
-
+    Card
+    { uc' | idn = estateId
+    , name = "Estate"
+    , text = Just "Worth 1 Victory"
+    , kind = "Victory"
+    , cost = 2
+    , victory = \_ -> 1
+    }
+    
 duchyId = 1010
-          
+              
 duchyCard : Card
 duchyCard =
-    { urCard | idn = duchyId
+    Card
+    { uc' | idn = duchyId
     , name = "Duchy"
     , text = Just "Worth 3 Victory"
     , kind = "Victory"
@@ -98,7 +103,8 @@ duchyCard =
 provinceId = 1020
              
 provinceCard =
-    { urCard | idn = provinceId
+    Card
+    { uc' | idn = provinceId
     , name = "Province"
     , text = Just "Worth 6 Victory"
     , kind = "Victory"
@@ -108,7 +114,8 @@ provinceCard =
 gardensId = 1100
 
 gardensCard =
-    { urCard | idn = gardensId
+    Card
+    { uc' | idn = gardensId
     , name = "Gardens"
     , text = Just "Worth 1 victory per 10 cards in your deck at end of game (round down)"
     , kind = "Victory"
@@ -122,7 +129,8 @@ gardensCard =
 curseId = 1005
 
 curseCard =
-    { urCard | idn = curseId
+    Card
+    { uc' | idn = curseId
     , name = "Curse"
     , text = Just "Worth -1 Victory"
     , kind = "Curse"
@@ -134,9 +142,10 @@ woodcutterId = 2000
 
 woodcutterCard =
     let c = makeAction woodcutterId 3 in
+    Card
     {c | name = "Woodcutter"
     , text = Just "+ 2 coin, +1 buy"
-    , playedEffect = Just (\ost ->
+    , playedEffect = Just (\_ ost ->
                                case ost of
                                    GameState st ->
                                        GameState {st | buys = st.buys + 1
@@ -147,30 +156,34 @@ villageId = 2001
 
 villageCard =
     let c = makeAction villageId 3 in
+    Card
     {c | name = "Village"
     , text = Just "+1 card, +2 actions"
-    , playedEffect = Just (\ost ->
+    , playedEffect = Just (\_ ost ->
                                case ost of
                                    GameState st ->
                                        GameState {st | actions = st.actions + 2} |> dealCurrentPlayerCards 1)
     }
 
 smithyId = 2002
-    
+
+-- this one does not work           
 smithyCard =
     let c = makeAction smithyId 4 in
+    Card
     { c | name = "Smithy"
     , text = Just "+3 Cards"
-    , playedEffect = Just (dealCurrentPlayerCards 3) }
+    , playedEffect = Just (\_ ost -> dealCurrentPlayerCards 3 ost) }
 
 
 marketId = 2003
 
 marketCard =
     let c = makeAction marketId 5 in
+    Card
     { c | name = "Market"
     , text = Just "+1 coin, +1 card, +1 action, +1 buy"
-    , playedEffect = Just (\ost ->
+    , playedEffect = Just (\_ ost ->
                                case ost of
                                    GameState st ->
                                        GameState {st | actions = st.actions + 1
@@ -182,9 +195,10 @@ festivalId = 2004
 
 festivalCard =
     let c = makeAction festivalId 5 in
+    Card
     { c | name = "Festival"
     , text = Just "+2 actions, +1 buy, +2 coins"
-    , playedEffect = Just (\ost ->
+    , playedEffect = Just (\_ ost ->
                                case ost of
                                    GameState st ->
                                        GameState {st | actions = st.actions + 2
@@ -196,10 +210,11 @@ witchId = 2005
 -- need to make an "iterator" function that threads state through
 witchCard =
     let c = makeAction witchId 5 in
+    Card
     { c | name = "Witch"
     , text = Just "+2 cards. Each other player gains a Curse"
     , playedEffect =
-        Just (\ost ->
+        Just (\_ ost ->
                   case ost of
                       GameState st ->
                           List.foldl (\pId -> gainPlayerCard pId curseId) ost
@@ -210,13 +225,14 @@ witchCard =
 throneRoomId = 2006
 
 throneRoomCard =
-    { urCard | idn = throneRoomId
+    Card
+    { uc' | idn = throneRoomId
     , name = "Throne Room"
     , text = Just "Choose an action card from your hand. Play it twice."
     , kind = "Action"
     , cost = 4
     , playedEffect =
-        Just (\ost ->
+        Just (\allCards' ost ->
                   case ost of
                       GameState st ->
                           let currentId = dflHead st.playerOrder dummyId
@@ -225,7 +241,7 @@ throneRoomCard =
                               -- filter for actions
                               actionCards =
                                   List.filter (\cId ->
-                                                   let card = dflGet cId allCards urCard in
+                                                   let card = unwrapCard <| dflGet cId allCards' urCard in
                                                    case card.playedEffect of
                                                        Just _ -> True
                                                        _ -> False
@@ -249,14 +265,15 @@ throneRoomCard =
                                                                        -- potentially... we are not using
                                                                        -- the st' we just got passed.
                                                                        let newHand = dropFirstInt cId currentHand
-                                                                           card = dflGet cId allCards urCard
+                                                                           card = unwrapCard <| dflGet cId allCards' urCard
                                                                        in
                                                                            -- make sure they gave a valid hand card
                                                                            -- and that it's an action
                                                                            case (List.member cId currentHand
                                                                                 ,card.playedEffect) of
-                                                                               (True, Just eff) ->
-                                                                                   let newStatePrePlay =
+                                                                               (True, Just eff') ->
+                                                                                   let eff = eff' allCards'
+                                                                                       newStatePrePlay =
                                                                                        -- update player's hand.
                                                                                        -- also delete this cont
                                                                                        GameState {st | players = update' currentId
@@ -281,12 +298,13 @@ throneRoomCard =
 laboratoryId = 2007
 
 laboratoryCard =
-    { urCard | idn = laboratoryId
+    Card
+    { uc' | idn = laboratoryId
     , name = "Laboratory"
     , text = Just "+2 cards, +1 action"
     , kind = "Action"
     , cost = 5
-    , playedEffect = Just (\ost ->
+    , playedEffect = Just (\_ ost ->
                                case ost of
                                    GameState st ->
                                        GameState {st | actions = st.actions + 1} |> dealCurrentPlayerCards 2) }
@@ -294,12 +312,13 @@ laboratoryCard =
 councilRoomId = 2008
 
 councilRoomCard =
-    { urCard | idn = councilRoomId
+    Card
+    { uc' | idn = councilRoomId
     , name = "Council Room"
     , text = Just "+4 cards. Each other player gets +1 card."
     , kind = "Action"
     , cost = 5
-    , playedEffect = Just (\ost -> dealCurrentPlayerCards 4 ost |>
+    , playedEffect = Just (\_ ost -> dealCurrentPlayerCards 4 ost |>
                                \ost ->
                                case ost of
                                    GameState st ->
@@ -310,12 +329,13 @@ councilRoomCard =
 workshopId = 2009
 
 workshopCard =
-    { urCard | idn = workshopId
+    Card
+    { uc' | idn = workshopId
     , name = "Workshop"
     , text = Just "Gain a card costing up to 4 coins"
     , kind = "Action"
     , cost = 3
-    , playedEffect = Just (\ost ->
+    , playedEffect = Just (\allCards' ost ->
                           case ost of
                               GameState st ->
                                   let currentId = dflHead st.playerOrder dummyId
@@ -323,7 +343,7 @@ workshopCard =
                                           Dict.keys <|
                                               Dict.filter (\_ num -> num > 0) st.shop
                                       cardsUpToFour = List.filter (\cId ->
-                                                                       let card = dflGet cId allCards urCard in
+                                                                       let card = unwrapCard <| dflGet cId allCards' urCard in
                                                                        card.cost <= 4) availCards
                                   in
                                       (GameState {st |
@@ -337,7 +357,8 @@ workshopCard =
                                                                             -- make sure it's valid
                                                                             if List.member cId cardsUpToFour
                                                                             then
-                                                                                gainCurrentPlayerCard cId st'
+                                                                                gainCurrentPlayerCard cId st' |>
+                                                                                    clearPrompt
                                                                             else st'
 
                                                                         (_, _) ->
@@ -348,7 +369,9 @@ workshopCard =
     }
 
 
-{- global dictionary used to look up cards by ID -}
+{- global dictionary used to look up cards by ID
+   this is always passed in when running the continuation.
+ -}
 
 allCards : Dict.Dict CardId Card
 allCards = Dict.fromList
@@ -359,6 +382,7 @@ allCards = Dict.fromList
             , (estateId, estateCard)
             , (duchyId, duchyCard)
             , (provinceId, provinceCard)
+            , (curseId, curseCard)
             , (gardensId, gardensCard)
             , (woodcutterId, woodcutterCard)
             , (villageId, villageCard)
@@ -366,10 +390,8 @@ allCards = Dict.fromList
             , (marketId, marketCard)
             , (festivalId, festivalCard)
             , (witchId, witchCard)
--- TODO in order to make throne room and workshop work there is a circularity we must break
--- continuation should take an allCards argument.
---            , (throneRoomId, throneRoomCard)
+            , (throneRoomId, throneRoomCard)
             , (laboratoryId, laboratoryCard)
             , (councilRoomId, councilRoomCard)
---            , (workshopId, workshopCard)
+            , (workshopId, workshopCard)
             ]

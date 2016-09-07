@@ -99,23 +99,30 @@ gamePhaseEncoder gp =
 
                             
 {- TODO eventually we should support serialization of cards -}                            
-type alias Card =
+type Card = Card
     { idn : CardId
     , name : String
     , img : Maybe String
     , text : Maybe String
     {- TODO maybe make this semantic. is it action, victory, etc -}
     , kind : String 
-    , victory : Int {- how much victory is this worth at end of game? -}
+    , victory : PlayerState -> Int {- how much victory is this worth at end of game? -}
     , spentValue : Int {- how much is it worth if played as money? -}
     , cost : Int {- how much does it cost to buy from the shop? -}
-    {- what happens when you play it as an action -}
-    , playedEffect : Maybe (GameState -> GameState)
+    {- what happens when you play it as an action
+       we take a list of cards to break a circularity
+       gah, this means Card can't be a type alias
+     -}
+    , playedEffect : Maybe (Dict.Dict CardId Card -> GameState -> GameState)
     {- after we play the card, where does it go/what else happens -}
     , afterPlayEffect : GameState -> GameState
     {- to do: some way of specifying reactions when it's in your hand -}
     {- to do: some way of specifying reactions when it's on the field -}
     }
+
+unwrapCard c' =
+    case c' of
+        Card c -> c
 
 -- we also need encoder/decoder for this
 type alias GamePrompt =
@@ -152,7 +159,10 @@ type PromptSpec =
       AcceptDecline
     -- Bool in the following two is whether to allow user to decline
     | ChooseCard Bool (List CardId)
-    | ChooseHandCard Bool
+    -- bool = declinable. list is a list of shop cards to include
+    -- if the list is empty this means choose from entire hand/shop
+    | ChooseHandCard Bool (List CardId)
+    | ChooseShopCard Bool (List CardId)
     | Unknown
 
 promptSpecEncoder : PromptSpec -> Value
@@ -163,9 +173,15 @@ promptSpecEncoder p =
                            [("type", Encode.string "chooseCard")
                            ,("declinable", Encode.bool b)
                            ,("cards", Encode.list (List.map Encode.int cs))]
-        ChooseHandCard b ->
+        ChooseHandCard b cs ->
             Encode.object [("type", Encode.string "chooseHandCard")
-                          ,("declinable", Encode.bool b)]
+                          ,("declinable", Encode.bool b)
+                          ,("card", Encode.list (List.map Encode.int cs))]
+
+        ChooseShopCard b cs -> Encode.object
+                               [("type", Encode.string "chooseShopCard")
+                               ,("declinable", Encode.bool b)
+                               ,("cards", Encode.list (List.map Encode.int cs))]
 
         Unknown -> Encode.object [("type", Encode.string "unknown")]
 
@@ -175,7 +191,8 @@ promptSpecDecoder =
         case s of
             "acceptDecline" -> succeed AcceptDecline
             "chooseCard" -> object2 ChooseCard ("declinable" := bool) ("cards" := list int)
-            "chooseHandCard" -> object1 ChooseHandCard ("declinable" := bool)
+            "chooseHandCard" -> object2 ChooseHandCard ("declinable" := bool) ("cards" := list int)
+            "chooseShopCard" -> object2 ChooseShopCard ("declinable" := bool) ("cards" := list int)
             _ -> succeed Unknown
 
 -- this is used to submit prompt responses to the server
@@ -232,13 +249,23 @@ type GameState = GameState
     -- PlayerId is whose action it is, String is a description
     , prompt : Maybe GamePrompt 
     -- used to modify the games state based on prompt output
-    , cont : Maybe (PromptOutput -> GameState) -- this will always be None on the remote
+    -- NB: why do we take a game state as input? because this allows us to keep the same
+    --   prompt easily. the game state is the "starting" state.
+    -- this will always be None on the remote
+    , cont : Maybe (PromptOutput -> GameState -> GameState)
     }
 
 -- helper for deconstructing game states
 unwrapGameState gs' =
     case gs' of
         GameState gs -> gs
+
+-- helper for cleaning up after prompt runs
+clearPrompt : GameState -> GameState
+clearPrompt gs' =
+    case gs' of
+        GameState gs ->
+            GameState {gs | prompt = Nothing, cont = Nothing}
 
 -- convenience wrapper for creating gamestates, used e.g. in decoder
 makeGameState gameId players playerOrder shop trash actions coin buys purchases plays phase rng prompt cont =
@@ -396,6 +423,7 @@ type ClientToServerMsg =
      -- TODO is GameId necessary
      -- takes GameId of game, and list of _all_ players in game
      | MasterLobbyPushCMsg GameId (List PlayerId)
+     -- Here, we need a message type for logging
 
 {- Serialization code -}
 clientToServerMsgEncoder : ClientToServerMsg -> Value
@@ -443,6 +471,7 @@ type ServerToClientMsg = PlayerJoinedSMsg GameId (List PlayerId)
                        -- update lobby state with new player list
                        | UpdateLobbySMsg (List PlayerId)
                        | PlayerQuitSMsg -- TODO include more info?? maybe a player ID or something
+                       -- have a message type for log entries
                        | UnknownSMsg -- used in event of parse failure; eventually remove
 
 {- JSON decoder for game states -}

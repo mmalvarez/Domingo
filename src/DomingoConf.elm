@@ -23,11 +23,20 @@ handSize = 5
 
 {- initial numbers for cards -}
 {- TODO all of these but kingdom cards depend on number of players -}
-estateHowMany : Int
-estateHowMany = 1
+{- int is number of players -}
+victoryHowMany : Int -> Int
+victoryHowMany numPlayers =
+    if numPlayers <= 2 then 8
+    else 12
+
+curseHowMany : Int -> Int
+curseHowMany numPlayers =
+    if numPlayers <= 2 then 10
+    else if numPlayers == 3 then 20
+    else 30
 
 copperHowMany : Int
-copperHowMany = 50
+copperHowMany = 60
 
 silverHowMany : Int
 silverHowMany = 40
@@ -43,16 +52,37 @@ rngBogusValue : Int
 rngBogusValue = 0
 
 -- TODO make this configurable!!
-startingGameState' =
-    { players = Dict.fromList [(dummyId, startingPlayerState)]
-    , playerOrder = [dummyId]
-    , shop = Dict.fromList [(copperId, copperHowMany)
-                           ,(silverId, silverHowMany)
-                           ,(goldId, goldHowMany)
-                           ,(estateId, estateHowMany)
-                           ,(woodcutterId, actionHowMany)
-                           ,(villageId, actionHowMany)
-                           ]
+-- maybe just provide the starting players list as input?
+startingGameState' {-numPlayers-} playerIds =
+    let numPlayers = List.length playerIds
+        victoryHowMany' = victoryHowMany numPlayers
+        curseHowMany' = curseHowMany numPlayers
+    in
+    { players = initPlayers startingPlayerState playerIds
+    , playerOrder = playerIds
+    , shop = Dict.fromList
+             [ -- money
+              (copperId, copperHowMany)
+             ,(silverId, silverHowMany)
+             ,(goldId, goldHowMany)
+             -- victory
+             ,(estateId, victoryHowMany')
+             ,(duchyId, victoryHowMany')
+             ,(provinceId, victoryHowMany')
+             ,(gardensId, victoryHowMany')
+             ,(curseId, curseHowMany')
+             -- actions
+             ,(woodcutterId, actionHowMany)
+             ,(villageId, actionHowMany)
+             ,(smithyId, actionHowMany)
+             ,(marketId, actionHowMany)
+             ,(festivalId, actionHowMany)
+             ,(witchId, actionHowMany)
+             ,(throneRoomId, actionHowMany)
+             ,(laboratoryId, actionHowMany)
+             ,(councilRoomId, actionHowMany)
+             ,(workshopId, actionHowMany)
+             ]
     , trash = []
     , actions = 0, coin = 0, buys = 0
     , purchases = [], plays = []
@@ -64,19 +94,22 @@ startingGameState' =
     }
 
 -- TODO move this out, let users apply changes to it
-startingGameState : GameState
-startingGameState =
-  GameState startingGameState'
+startingGameState : (List PlayerId) -> GameState
+startingGameState playerIds =
+  GameState <| startingGameState' playerIds
 
-{- predicate checking for game over (called after each purchase) -}
-{- game ends if there are no more Provinces
-   (TODO: add 3-pile ending)
- -}
+{- predicate checking for game over (called after each purchase, should be each gain.) -}
+{- TODO: add a "gain" primitive we can add this check to -}
 gameOver : GameState -> Bool
 gameOver gst =
     case gst of
         GameState st ->
-            let numEstates = dflGet provinceId st.shop 0 in
-            if numEstates == 0 then True
-            else False
+            let noProvinces = Dict.get provinceId st.shop == Just 0
+                numEmpty =
+                    Dict.foldl (\_ num acc ->
+                                    if num == 0 then acc + 1 else acc
+                               ) 0 st.shop
+            in
+            noProvinces || numEmpty >= 3
+                
       

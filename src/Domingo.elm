@@ -43,7 +43,7 @@ main =
     , view = DomingoView.displayClientState
     , update = update
     , subscriptions = subscriptions
-  }
+    }
 
 init : (ClientState, Cmd Msg)
 init = (startingClientState, Cmd.none)
@@ -137,17 +137,16 @@ update msg state =
             Nothing -> (ClientLobby clst, Cmd.none)
             Just mcs ->
                 -- make sure we have at least 1 player
+                -- we also need to make sure we don't have more than 4 (for now)
                 case clst.playerIds of
                     [] -> (ClientLobby clst, Cmd.none)
                     _ ->
                         -- make sure player IDs are unique
-                        let startState =
-                                {startingGameState' | playerOrder = clst.playerIds
-                                , players = initPlayers startingPlayerState clst.playerIds
-                                , gameId = clst.gameId}
-                                
-                                -- if the rng is not filled in,
-                                -- InitRandomAndDeal will take care of it                                
+                        let sgs' = startingGameState' clst.playerIds
+                            startState =
+                                {sgs' | gameId = clst.gameId}
+                            -- if the rng is not filled in,
+                            -- InitRandomAndDeal will take care of it                                
                             startStateRng = case mcs.rngInput of
                                                 Nothing -> startState
                                                 Just seed -> {startState | rng = seed}
@@ -215,26 +214,26 @@ update msg state =
 
     (DoMove md, ClientPlayMaster cp) ->
         case md.play of
-            -- TODO this used to be Pos
             -- we need to check if the card ID is actually in their hand
+            -- we need to also make sure that there is no prompt
             PlayCard cId ->
                 let
                     ogst = cp.gameState
                     gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
-                    card = dflGet cId allCards urCard
-                    -- we need a function to drop one of a card
+                    card = unwrapCard <| dflGet cId allCards urCard
                     newHand = dropFirstInt cId player.hand
                 in
-                    -- TODO add in after-play effects. We need to pattern match on it
                     case gst.phase of
                         ActionPhase ->
                             case card.playedEffect of
                                 {- if this card is not an action, do not play it -}
                                 Nothing -> (state, Cmd.none)
-                                Just eff ->
-                                    if gst.actions <= 0
+                                Just eff' ->
+                                    let eff = eff' allCards in
+                                    -- make sure there is no prompt
+                                    if gst.actions <= 0 || gst.prompt /= Nothing
                                     then (state, Cmd.none)
                                     {- calculate the state after deducting card costs -}
                                     else let gst' =
@@ -244,11 +243,12 @@ update msg state =
                                                           update' pId (\p -> {p | hand = newHand })
                                                               gst.players
                                                  }
-                                         in GameState gst' |> card.afterPlayEffect |> updateAndPushMasterState state
+                                         in GameState gst' |> eff |> card.afterPlayEffect |> updateAndPushMasterState state
                       
                         CoinPhase ->
                             {- make sure we don't play valueless cards as coins -}
-                            if card.spentValue <= 0 then (state, Cmd.none)
+                            if card.spentValue <= 0 || gst.prompt /= Nothing
+                            then (state, Cmd.none)
                             else
                                 let 
                                     gst' =  {gst | plays = {-cId ::-} gst.plays
@@ -268,11 +268,12 @@ update msg state =
                     gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
-                    card = dflGet cId allCards urCard
+                    card = unwrapCard <| dflGet cId allCards urCard
                 in
                     case gst.phase of
                         BuyPhase ->
-                            if gst.buys > 0 && gst.coin >= card.cost
+                            -- make sure there is no prompt
+                            if gst.buys > 0 && gst.coin >= card.cost && gst.prompt == Nothing
                             then
                                 let gst' =
                                         { gst | purchases = cId :: gst.purchases
@@ -309,41 +310,42 @@ update msg state =
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
                 in
-                    case gst.phase of
-                        ActionPhase -> GameState {gst | phase = CoinPhase} |> updateAndPushMasterState state
-                        CoinPhase -> GameState {gst | phase = BuyPhase} |> updateAndPushMasterState state
-                        BuyPhase ->
-                            {- first, add buys and plays back into discard pile, and reset resource values -}
-                            let gst' = {gst | players =
+                    -- make sure there is no prompt
+                    if gst.prompt == Nothing then
+                        case gst.phase of
+                            ActionPhase -> GameState {gst | phase = CoinPhase} |> updateAndPushMasterState state
+                            CoinPhase -> GameState {gst | phase = BuyPhase} |> updateAndPushMasterState state
+                            BuyPhase ->
+                                {- first, add buys and plays back into discard pile, and reset resource values -}
+                                let gst' = {gst | players =
                                                 update' pId
-                                                    (\p -> {p | discard = p.discard ++ p.hand ++
-                                                                          gst.purchases ++ gst.plays
-                                                              , hand = []}) gst.players
-                                            , purchases = []
-                                            , plays = []
-                                            , coin = 0
-                                            , buys = 1
-                                            , actions = 1
-                                            , phase = ActionPhase
-                                       }
-                            in
-                                GameState gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateAndPushMasterState state
+                                                (\p -> {p | discard = p.discard ++ p.hand ++
+                                                            gst.purchases ++ gst.plays
+                                                       , hand = []}) gst.players
+                                           , purchases = []
+                                           , plays = []
+                                           , coin = 0
+                                           , buys = 1
+                                           , actions = 1
+                                           , phase = ActionPhase
+                                           }
+                                in
+                                    GameState gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateAndPushMasterState state
 
-                        _ -> (state, Cmd.none)
+                            _ -> (state, Cmd.none)
+                    else (state, Cmd.none)
 
             PromptResponse po ->
                 let ogst = cp.gameState
                     gst = getGameState ogst
+                    -- TODO don't need all of these
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
                 in
-                    -- TODO: need to fix this get new game state, from running continuation
-                    -- need to check shit
                     -- need to distinguish between noop and ill typed input
-                    -- TODO: make sure that prompts don't get erased if they provide bad input
                     case (gst.prompt, gst.cont) of
                         (Just _, Just c) ->
-                            let newState = c po in
+                            let newState = c po ogst in
                             updateAndPushMasterState state newState
 
                         -- no prompt? then ignore

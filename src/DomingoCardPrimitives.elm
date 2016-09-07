@@ -215,12 +215,14 @@ initialDeal ost =
 {- sum how many victory points a list of cards is worth 
    should be passed the list of cards to check (allCards); this is to
    break the dependency on DomingoCards
+   we pass a PlayerState because we may depend on player's deck
+   (e.g. gardens)
 -}
-scoreCards : List CardId -> Dict.Dict CardId Card -> Int
-scoreCards l all =
+scoreCards : List CardId -> PlayerState -> Dict.Dict CardId Card -> Int
+scoreCards l ps allCards =
   List.foldl (\cId i ->
-              let c = dflGet cId all urCard in
-              c.victory + i) 0 l
+              let c = unwrapCard <| dflGet cId allCards urCard in
+              c.victory ps + i) 0 l
 
 {- turn a list of players into a Dict with initial player states (as specified in DomingoConf) -}
 {- TODO make this more tunable? -}
@@ -232,8 +234,10 @@ initPlayers start =
 {- dummy card used for lookups that the compiler thinks could fail -}
 urId = -1
 
+uc' =
+    { idn = urId, name = "Ur-Card", img = Nothing, text = Nothing
+    , kind = "", victory = (\_ -> 0), spentValue = 0, cost = Random.maxInt
+    , playedEffect = Nothing, afterPlayEffect = (\x -> x) }
+      
 urCard : Card
-urCard =
-  { idn = urId, name = "Ur-Card", img = Nothing, text = Nothing
-  , kind = "", victory = 0, spentValue = 0, cost = Random.maxInt
-  , playedEffect = Nothing, afterPlayEffect = (\x -> x) }
+urCard = Card uc'

@@ -14,51 +14,63 @@ import String
 
 {- button generators -}
 {- for buttons on hand cards -}
--- TODO make this work by ID also, rather than pos (for logging ease)
 playButtonGenHand cid =
   [tr [] [], button [ onClick (SubmitMove (PlayCard cid)) ] [ text "play" ]]
 
 -- for "pick a card" from hand prompts
-chooseButtonGenHand isOptional pos cid =
+chooseButtonGenHand isOptional cid =
     let move = 
             if isOptional then
                 POMaybeInt (Just cid)
             else POInt cid
     in
-    [ tr [] [], button [ onClick (SubmitMove (PromptResponse move)) ] [text "select"]]
+    [ tr [] [], button [ onClick <| SubmitMove <| PromptResponse move ] [text "select"]]
     
 
-{- for buttons on shop cards (TODO) -}
+{- for buttons on shop cards -}
+buyButtonGenShop cId =
+  [tr [] [], button [ onClick (SubmitMove (BuyCard cId))]
+                    [ text "Buy" ]]
+
+chooseButtonGenShop isOptional cid =
+    let move =
+            if isOptional then
+                POMaybeInt (Just cid)
+            else POInt cid
+    in
+        [tr [] [], button [ onClick <| SubmitMove <| PromptResponse move ] [text "select"]]
+
+
+            
 
 {- output a card as HTML -}
 {- takes card ID, its position in the list, and additional stuff to put at the bottom -}
 {- also takes ID of the current player -}
 displayCard cId footer =
-  let c = dflGet cId allCards urCard in
+  let c = unwrapCard <| dflGet cId allCards urCard in
   table [Html.Attributes.style [("outlineColor", "black"), ("outlineStyle", "solid")]]
         ([ tr [] [ td [] [strong [] [h3 [] [text c.name]]] ]
          , tr [] [ td [] [strong [] [text c.kind]]]
-         , tr [] [ td [] [text ("Victory: " ++ toString c.victory) ] ]
+--         , tr [] [ td [] [text ("Victory: " ++ toString c.victory) ] ]
          , tr [] [ td [] [text ("Value: " ++ toString c.spentValue)] ]
-         , tr [] [ td [] [text ("Cost: " ++ toString c.cost) ] ] ] ++
+         , tr [] [ td [] [text ("Cost: " ++ toString c.cost) ] ]
+         , tr [] [ td [] [text (case c.text of
+                                    Just s -> s
+                                    _ -> "")]]] ++
            footer) -- TODO should footer really be in the table?
 
 {- display your hand -}
 {- outer div, then inner divs for each card. each card gets a name, description, and a play button -}
-{- TODO: if we have a "choose" prompt give each a "choose" button -}
 displayHand cards cardFooter =
   table [] <| List.foldl (\cId list -> list ++ [displayCard cId (cardFooter cId), td [] []]) [] cards
 
-{- button for shop -}
-buttonGenShop cId =
-  [tr [] [], button [ onClick (SubmitMove (BuyCard cId))]
-                    [ text "Buy" ]]
 
 {- display cards in shop -}
--- eventually this should take an input saying if it's your turn
-displayShop shop ourTurn =
-    let footer' cId = if ourTurn then buttonGenShop cId else []
-        footer cId = footer' cId ++ [ text (" - Remaining: " ++ toString (dflGet cId shop 0))]
+-- TODO make this take a footer, just like display hand
+-- the footer will be empty if user can't buy
+-- may also reflect current prompt
+displayShop shop footer' =
+    let footer cId = footer' cId ++ [ text (" - Remaining: " ++ toString (dflGet cId shop 0))]
     in
   table []
         (List.foldl (\cId acc -> acc ++
@@ -68,7 +80,7 @@ displayShop shop ourTurn =
 displayWinnersTable gst =
   let
     scorers = Dict.foldl
-                (\k v acc -> ((v.victory + scoreCards (v.deck ++ v.hand ++ v.discard) allCards), k) :: acc)
+                (\k v acc -> ((v.victory + scoreCards (v.deck ++ v.hand ++ v.discard) v allCards), k) :: acc)
                 [] gst.players
 
     winners = List.sortWith (\(s1,p1) (s2,p2) -> compare s2 s1) scorers
@@ -112,6 +124,7 @@ displayResources gameState currPlayer ourTurn =
         ]
 -}
 
+-- display a (Maybe GamePrompt) as HTML
 displayMaybePrompt mp =
     div [] <|
         case mp of
@@ -125,7 +138,6 @@ displayMaybePrompt mp =
                             , button [(onClick (SubmitMove (PromptResponse (POBool False))))]
                                 [text "Decline"]]
 
-                        -- needs a decline button
                         ChooseCard decl cs ->
                             if decl then
                                 let footer cId = [ tr [] []
@@ -150,13 +162,17 @@ displayMaybePrompt mp =
                                 
 
                         -- TODO: have a way to make displayHand do something
-                        -- TODO also this needs a decline button if b = True
-                        ChooseHandCard decl ->
+                        ChooseHandCard decl cs ->
                             if decl then
-                                [button [onClick (SubmitMove (PromptResponse (POMaybeInt Nothing)))] [text "Decline (Choosing From Hand)"]]
+                                [button [onClick (SubmitMove (PromptResponse (POMaybeInt Nothing)))] [text "Decline (Choosing from Hand)"]]
+                            else []
+
+                        ChooseShopCard decl cs ->
+                            if decl then
+                                [button [onClick (SubmitMove (PromptResponse (POMaybeInt Nothing)))] [text "Decline (Choosing from Shop)"]]
                             else []
                                 
-                        -- this should never happen (corresponds to displaying an "unknown" prompt
+                        -- this should never happen (corresponds to displaying an "unknown" prompt)
                         _ -> []
                         
             Nothing -> []
@@ -164,6 +180,14 @@ displayMaybePrompt mp =
 -- display the state of the game
 -- second argument is a list of local players, to determine if we
 -- should show the buttons
+{- this needs to be updated to check prompt.
+   do the following:
+   if no prompt, do what we currently do
+   if there is a "ChooseShopCard" prompt for the current player,
+     then we change the shop footer
+   if there is a "ChooseHandCard" prompt for the current player,
+     then we change the hand footer
+-}
 displayGameState gameState' localPlayers =
     let
         gameState = unwrapGameState gameState'
@@ -175,19 +199,54 @@ displayGameState gameState' localPlayers =
               then
                   displayWinners gameState
               else
+                  -- check to see if we have a prompt
+                  -- we need some kind of ourPrompt, to see if it is our prompt
+                  -- if there is no prompt do what we do
+                  -- otherwise we need to say something like "it is X's prompt"
+                  -- and then display the prompt which may require changes to
+                  -- card footer of shop or hand
+                  
                   -- show players connected
                   -- otherwise, show the game
+
+                  -- TODO rewrite this more maintainably
+                  let shopButtonGen =
+                          case gameState.prompt of
+                              Just p ->
+                                  case p.spec of
+                                      ChooseShopCard b cIds ->
+                                          \cId ->
+                                              if List.member cId cIds && ourTurn
+                                              then chooseButtonGenShop b cId
+                                              else []
+                                          
+                                      _ -> if ourTurn then buyButtonGenShop else \_ -> []
+
+                              _ ->  if ourTurn then buyButtonGenShop else \_ -> []
+                      handButtonGen =
+                          case gameState.prompt of
+                              Just p ->
+                                  case p.spec of
+                                      ChooseHandCard b cIds ->
+                                          \cId ->
+                                               if List.member cId cIds
+                                               then chooseButtonGenHand b cId
+                                               else []
+
+                                      _ -> if ourTurn then playButtonGenHand else \_ -> []
+                              _ -> if ourTurn then playButtonGenHand else \_ -> []
+                  in
                   div [] <|
                       [displayAllPlayers gameState localPlayers
                       , text ("It is currently " ++ toString currPid ++ "'s turn.")
                       , br [] []] ++
                       [text ("Current Phase: " ++ toString gameState.phase), br [] []] ++
-                      [if ourTurn then displayHand currPlayer.hand playButtonGenHand
+                      [if ourTurn then displayHand currPlayer.hand handButtonGen
                        else text "not your turn."
                       , br [] []] ++
                       [displayResources gameState currPlayer ourTurn
                       , br [] []] ++
-                      [displayShop gameState.shop ourTurn
+                      [displayShop gameState.shop shopButtonGen
                       , br [] []] ++
                       (if ourTurn then
                            [button [onClick (SubmitMove EndPhase)] [text "end phase/turn"]]
