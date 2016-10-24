@@ -14,6 +14,8 @@ var clients = {}
 // do this later as I didn't get it right
 // var games = {}
 
+// TODO we need log message handling
+
 // helper for cleanup when a client disconnects/ends game
 // TODO socket ID might not be 100% necessary
 function endGame(gameId, mySocket) {
@@ -195,12 +197,12 @@ io.on('connection', function(socket){
                 var gameState = parsedMsg.gameState;
                 // forward the game state to all interested clients
                 for (socketId in clients) {
-                    console.log ("CHECK master: " + clients[socketId].master);
-                    console.log ("Looking for game " + parsedMsg.gameId + " - found " + clients[socketId].gameId);
+//                    console.log ("CHECK master: " + clients[socketId].master);
+//                    console.log ("Looking for game " + parsedMsg.gameId + " - found " + clients[socketId].gameId);
                     if (!clients[socketId].master &&
                         clients[socketId].gameId === parsedMsg.gameId)
                     {
-                        console.log("FORDWARDING TO INTERESTED CLIENTS");
+//                        console.log("FORDWARDING TO INTERESTED CLIENTS");
                         var socket2 = clients[socketId].socket;
                         socket2.emit ('game',
                                       JSON.stringify({msgType : "updateGameState",
@@ -223,6 +225,23 @@ io.on('connection', function(socket){
                         clients[socketId].socket.emit('game',
                                                       JSON.stringify({msgType : "updateLobbyState",
                                                                       players : parsedMsg.players}));
+                    }
+                }
+            }
+        }
+        // log the moves people do
+        // TODO use the new log system
+        else if (parsedMsg.msgType === "gameLog") {
+            var theGameId = clients[socket.id].gameId;
+            // TODO make sure they are actually master if they are issuing a move
+            if (parsedMsg.logEntry) {
+                for (socketId in clients) {
+                    if (clients[socketId].gameId === theGameId) {
+                        // send the log
+                        clients[socketId].socket.emit('game',
+                                                      JSON.stringify({msgType : "gameLog",
+                                                                      gameId : theGameId,
+                                                                      logEntry : parsedMsg.logEntry}));
                     }
                 }
             }

@@ -25,9 +25,6 @@ import DomingoConf exposing(..)
 {- TODO: Fix div structure of display functions -}
 {- TODO: implement initial deal more sanely,
    use updateState -}
-{- TODO: More logically divide between Domingo,
-   DomingoActions, and DomingoConfig -}
-
 
 startingClientState : ClientState
 startingClientState = ClientPreGame
@@ -52,13 +49,19 @@ pushMsg : ClientToServerMsg -> Cmd Msg
 pushMsg m =
     toServer <| Encode.encode 0 <| clientToServerMsgEncoder m
 
-updateAndPushMasterState : ClientState -> GameState -> (ClientState, Cmd Msg)
-updateAndPushMasterState cs ogs =
+pushMsgs : List ClientToServerMsg -> Cmd Msg
+pushMsgs ms = Cmd.batch <| List.map pushMsg ms
+        
+-- this one now takes a (list of) log entries corresponding to a move
+updateAndPushMasterState : ClientState -> List LogEntry -> GameState -> (ClientState, Cmd Msg)
+updateAndPushMasterState cs le ogs =
     case ogs of
         GameState gs ->
+            let entryMsgs = List.map (GameLogCMsg gs.gameId) le in
             case cs of
                 ClientPlayMaster cp ->
-                    (ClientPlayMaster {cp | gameState = ogs}, pushMsg (MasterPushCMsg gs.gameId ogs))
+                    (ClientPlayMaster {cp | gameState = ogs}
+                    , pushMsgs ([MasterPushCMsg gs.gameId ogs] ++ entryMsgs))
                 _ -> (cs, Cmd.none)
 
 -- send an internal message
@@ -155,6 +158,8 @@ update msg state =
                                               , gameState = GameState startStateRng
                                               , message = clst.message
                                               , localPlayerIds = Set.fromList clst.localPlayerIds
+                                              , gameLog = []
+                                              , chatBox = Nothing
                                               }
                             , Random.generate FinishStartingGame (Random.int Random.minInt Random.maxInt))
                 
@@ -193,7 +198,7 @@ update msg state =
                     cp
         in
             cp' |> (\cp -> cp.gameState)
-                |> initialDeal |> updateAndPushMasterState state
+                |> initialDeal |> updateAndPushMasterState state []
 
     -- if we are master, do the move locally, and then push update
     (SubmitMove pd, ClientPlayMaster cp) ->
@@ -212,10 +217,11 @@ update msg state =
         in
         (ClientPlaySub cps, pushMsg (MakeMoveCMsg cps.gameId {play = pd, playerId = currentPlayer}))
 
+    -- this runs on master, and is used to actually do the move
+    -- it will send 2 messages: masterPush and a gameLog for the move
     (DoMove md, ClientPlayMaster cp) ->
         case md.play of
-            -- we need to check if the card ID is actually in their hand
-            -- we need to also make sure that there is no prompt
+            -- TODO we need to check if the card ID is actually in their hand
             PlayCard cId ->
                 let
                     ogst = cp.gameState
@@ -237,13 +243,15 @@ update msg state =
                                     then (state, Cmd.none)
                                     {- calculate the state after deducting card costs -}
                                     else let gst' =
-                                                 {gst | plays = {-cId ::-} gst.plays
-                                                      , actions = gst.actions - 1
+                                                 {gst | actions = gst.actions - 1
                                                       , players =
                                                           update' pId (\p -> {p | hand = newHand })
                                                               gst.players
                                                  }
-                                         in GameState gst' |> eff |> card.afterPlayEffect |> updateAndPushMasterState state
+                                             ls = [LoggedMove { playerId = pId
+                                                              , play = PlayCard card.idn}]
+                                                 
+                                         in GameState gst' |> eff |> card.afterPlayEffect |> updateAndPushMasterState state ls
                       
                         CoinPhase ->
                             {- make sure we don't play valueless cards as coins -}
@@ -256,8 +264,10 @@ update msg state =
                                             , players = update' pId (\p -> {p | hand = newHand})
                                                         gst.players
                                             }
+                                    ls = [LoggedMove { playerId = pId
+                                                     , play = PlayCard card.idn }]
                      
-                                in GameState gst' |> card.afterPlayEffect |> updateAndPushMasterState state
+                                in GameState gst' |> card.afterPlayEffect |> updateAndPushMasterState state ls
 
                         {- not the right time to play a card -}
                         _ -> (state, Cmd.none)
@@ -281,6 +291,8 @@ update msg state =
                                         , coin = gst.coin - card.cost
                                         , shop = update' cId (\i -> i - 1) gst.shop
                                         }
+                                    ls = [LoggedMove {playerId = pId
+                                                     , play = BuyCard card.idn}]
                                 in
                                     if gameOver (GameState gst')
                                     then
@@ -295,9 +307,9 @@ update msg state =
                                                                                         gst'.plays
                                                                             , hand = []}) gst'.players
                                                     }
-                                        in GameState gst'' |> updateAndPushMasterState state
+                                        in GameState gst'' |> updateAndPushMasterState state ls
 
-                                    else GameState gst' |> updateAndPushMasterState state
+                                    else GameState gst' |> updateAndPushMasterState state ls
 
                             else (state, Cmd.none)
 
@@ -309,12 +321,14 @@ update msg state =
                     gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
+                    ls = [LoggedMove {playerId = pId
+                                     ,play = EndPhase}]
                 in
                     -- make sure there is no prompt
                     if gst.prompt == Nothing then
                         case gst.phase of
-                            ActionPhase -> GameState {gst | phase = CoinPhase} |> updateAndPushMasterState state
-                            CoinPhase -> GameState {gst | phase = BuyPhase} |> updateAndPushMasterState state
+                            ActionPhase -> GameState {gst | phase = CoinPhase} |> updateAndPushMasterState state ls
+                            CoinPhase -> GameState {gst | phase = BuyPhase} |> updateAndPushMasterState state ls
                             BuyPhase ->
                                 {- first, add buys and plays back into discard pile, and reset resource values -}
                                 let gst' = {gst | players =
@@ -330,7 +344,7 @@ update msg state =
                                            , phase = ActionPhase
                                            }
                                 in
-                                    GameState gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateAndPushMasterState state
+                                    GameState gst' |> dealPlayerCards pId 5 |> rotatePlayers |> updateAndPushMasterState state ls
 
                             _ -> (state, Cmd.none)
                     else (state, Cmd.none)
@@ -341,21 +355,53 @@ update msg state =
                     -- TODO don't need all of these
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
+                    ls = [LoggedMove {playerId = pId
+                                     , play = PromptResponse po}]
                 in
                     -- need to distinguish between noop and ill typed input
                     case (gst.prompt, gst.cont) of
                         (Just _, Just c) ->
                             let newState = c po ogst in
-                            updateAndPushMasterState state newState
+                            updateAndPushMasterState state ls newState
 
                         -- no prompt? then ignore
                         (_, _) -> (state, Cmd.none)
 
-                
+    -- chat handling
+    (SendChat, _) ->
+        -- TODO: should we wait to clear box until server responds
+        case state of
+            ClientPlayMaster cp ->
+                case cp.chatBox of
+                    Just m -> (ClientPlayMaster {cp | chatBox = Nothing}
+                              , pushMsg (GameLogCMsg cp.gameId
+                                             (LoggedChatMessage (dflHead (unwrapGameState cp.gameState).playerOrder dummyId) m)))
+
+                    Nothing -> (state, Cmd.none)
+
+            ClientPlaySub cp ->
+                case cp.chatBox of
+                    Just m -> (ClientPlaySub {cp | chatBox = Nothing}
+                              , pushMsg (GameLogCMsg cp.gameId
+                                             (LoggedChatMessage (dflHead (unwrapGameState cp.gameState).playerOrder dummyId) m)))
+                    Nothing -> (state, Cmd.none)
+
+            _ -> (state, Cmd.none)
+
+    (UpdateChatBox s, _) ->
+        case state of
+            ClientPlayMaster cp ->
+                     (ClientPlayMaster {cp | chatBox = Just s}, Cmd.none)
+
+            ClientPlaySub cp ->
+                     (ClientPlaySub {cp | chatBox = Just s}, Cmd.none)
+
+            _ -> (state, Cmd.none)
+                                
     -- handle asynchronous server messages
     (GotServerMsg msg, _) ->
         -- see if we are getting them this far
-        let decodedResult = parseServerToClientMessage msg in
+        let decodedResult = Debug.log "here now" (parseServerToClientMessage msg) in
         case decodedResult of
             Ok decoded ->
                 case decoded of
@@ -369,7 +415,7 @@ update msg state =
                                     Just _ ->
                                         let playerIds' = cls.playerIds ++ pIds in
                                         -- TODO make sure we don't have duplicate players
-                                        -- for now the server should check this
+                                        -- send a "join failed" if we do
                                         (ClientLobby {cls | playerIds = playerIds'}
                                         -- send a "push lobby" command
                                         , pushMsg (MasterLobbyPushCMsg gId playerIds'))
@@ -378,7 +424,7 @@ update msg state =
                                         
                     
                     UpdateGameStateSMsg gi gs msg ->
-                        case state of
+                        case (Debug.log "updating game state" state) of
                             ClientLobby cls ->
                                 -- lobby means the game just started
                                 case cls.masterConfigState of
@@ -388,7 +434,9 @@ update msg state =
                                         then (ClientPlaySub { gameId = cls.gameId
                                                             , gameState = gs
                                                             , message = Just msg
-                                                            , localPlayerIds = Set.fromList cls.localPlayerIds}
+                                                            , localPlayerIds = Set.fromList cls.localPlayerIds
+                                                            , gameLog = []
+                                                            , chatBox = Nothing}
                                              , Cmd.none)
                                         else (state, Cmd.none)
 
@@ -410,7 +458,7 @@ update msg state =
                             ClientPreGame cpgs -> (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
                             ClientPlayMaster cpm -> (ClientPlayMaster {cpm | message = Just msg}, Cmd.none)
 
-                    
+                    -- if we are master and a player made a move
                     MadeMoveSMsg gi md ->
                         case state of
                             -- TODO: check for game ID consistency?
@@ -434,7 +482,7 @@ update msg state =
                             
                             _ -> (state, Cmd.none)
 
-                    LobbyResponseSMsg lobbyResp->
+                    LobbyResponseSMsg lobbyResp ->
                         case state of
                             ClientPreGame cpst ->
                                 case cpst.gidInput of
@@ -469,12 +517,22 @@ update msg state =
                                                          {cpst | message = Just "unable to join"}, Cmd.none)
                                     -- we need a game ID
                                     Nothing -> (state, Cmd.none)
-                                
                             _ -> (state, Cmd.none)
 
+                    GameLogSMsg gid le ->
+                        -- just add the new message to the log
+                        case state of
+                            ClientPlaySub cps ->
+                                (ClientPlaySub {cps | gameLog = cps.gameLog ++ [le]}, Cmd.none)
+
+                            ClientPlayMaster cpm ->
+                                (ClientPlayMaster {cpm | gameLog = cpm.gameLog ++ [le]}, Cmd.none)
+
+                            _ -> (state, Cmd.none)
+                                 
                     -- is this a message type we don't understand?
                     _ -> (state, Cmd.none)
-                         
+
             -- did we fail to even parse it?
             _ -> (state, Cmd.none)
         

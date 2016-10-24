@@ -318,7 +318,7 @@ type alias ClientLobbyState =
     { gameId : GameId
     -- players on this client
     , localPlayerIds : List PlayerId
-    -- all players in game (for display purposes
+    -- all players in game (for display purposes)
     , playerIds : List PlayerId
     -- am I master? if so, what is config state
     , masterConfigState : Maybe ClientLobbyConfigState
@@ -333,8 +333,69 @@ type alias ClientPlayState =
   { gameId : GameId
   , localPlayerIds : Set.Set PlayerId -- keep track of whose turns should be taken on this machine
   , gameState : GameState {- game state should have .gameId == gId -}
+  , gameLog : List LogEntry -- messages describing all plays so far, plus other stuff (e.g. chat)
+  , chatBox : Maybe String
   , message : Maybe String
   }
+
+-- events in the game. e.g. game start, game end
+-- TODO add beginning/end of turns to this.
+type GameEvent =
+      GameStart Int -- this is the RNG value used to start the game. maybe we don't want it.
+    | GameEnd
+    -- TurnStart (turnNum, playerId). TODO we need to add turn number to game.
+
+gameEventEncoder : GameEvent -> Value
+gameEventEncoder ge =
+    case ge of
+        GameStart rng -> Encode.object [("eventType", Encode.string "gameStart")
+                                       ,("rng", Encode.int rng)]
+        GameEnd -> Encode.object [("eventType", Encode.string "gameEnd")]
+
+gameEventDecoder : Decoder GameEvent
+gameEventDecoder =
+    ("eventType" := string) `andThen` \eventType ->
+        case eventType of
+            "gameStart" -> object1 GameStart ("rng" := int)
+            "gameEnd" -> succeed GameEnd
+            _ -> fail "invalid game event"
+
+-- type for entries that go in the game log.
+type LogEntry = LoggedChatMessage PlayerId String
+              | LoggedMove MoveDesc
+              | LoggedGameEvent GameEvent
+
+logEntryEncoder : LogEntry -> Value
+logEntryEncoder le =
+    case le of
+        LoggedChatMessage pid m -> Encode.object [("entryType", Encode.string "loggedChat")
+                                                    ,("playerId", Encode.string pid)
+                                                    ,("message", Encode.string m)]
+
+        LoggedMove md -> Encode.object [("entryType", Encode.string "loggedMove")
+                                       ,("move", moveDescEncoder md)]
+
+        LoggedGameEvent ge -> Encode.object [("entryType", Encode.string "loggedGameEvent")
+                                            ,("event", gameEventEncoder ge)]
+
+-- TODO we should make a decoder/encoder for e.g. player id
+-- in case we want to change the type
+logEntryDecoder : Decoder LogEntry
+logEntryDecoder =
+    ("entryType" := string) `andThen` \entryType ->
+        case entryType of
+            "loggedChat" ->
+                object2
+                    LoggedChatMessage
+                    ("playerId" := string) ("message" := string)
+            "loggedMove" ->
+                object1 LoggedMove ("move" := moveDescDecoder)
+
+            "loggedGameEvent" ->
+                object1 LoggedGameEvent ("event" := gameEventDecoder)
+                    
+            _ -> fail "invalid log entry"
+    
 
 type ClientState =
        ClientPreGame ClientPreGameState
@@ -342,36 +403,39 @@ type ClientState =
      | ClientPlayMaster ClientPlayState
      | ClientPlaySub ClientPlayState
 
-{- Messages used by main app -}
 type Msg =
-          {- communications -}
-            GotServerMsg String
-          {- for debugging -}
-          | ShowState
-          {- pregame. -}
-          | UpdateGameId GameId
-          | UpdateNewPlayer PlayerId            
-          | AddNewPlayer
-          | RemovePlayer PlayerId
-          | StartLobby -- True if we are spectator
-          {- lobby -}
-          | UpdateMasterSeed String
-          | StartGame
-          {- in game -}
-          | SubmitMove PlayDesc -- master and nonmaster use this
-          | DoMove MoveDesc -- only master uses this
-          {- miscellaenous -}
-          {- message sent when new random seed is generated 
-             gets randomness if the user did not provide it, and deals initial hand -}
-          | FinishStartingGame Int
-          {- if a task fails - should be a no op, possibly log error. not sure if i even use this... -}
-          | TaskFail String
-          {- general call to update client's state, and send it to the server (todo: rename; this is a master-only thing) -}
---          | UpdateClientState ClientState
-          | BroadcastGameState
-          | NoOp -- should never be responded to
-          | RestartClient
-
+        {- communications -}
+          GotServerMsg String
+        {- for debugging -}
+        | ShowState
+        {- pregame. -}
+        | UpdateGameId GameId
+        | UpdateNewPlayer PlayerId            
+        | AddNewPlayer
+        | RemovePlayer PlayerId
+        | StartLobby -- True if we are spectator
+        {- lobby -}
+        | UpdateMasterSeed String
+        | StartGame
+        {- in game -}
+        | SubmitMove PlayDesc -- master and nonmaster use this
+        | DoMove MoveDesc -- only master uses this
+        {- miscellaenous -}
+        {- message sent when new random seed is generated 
+        gets randomness if the user did not provide it, and deals initial hand -}
+        | FinishStartingGame Int
+        {- if a task fails - should be a no op, possibly log error. not sure if i even use this... -}
+        | TaskFail String
+        {- general call to update client's state, and send it to the server (todo: rename; this is a master-only thing) -}
+       --          | UpdateClientState ClientState
+        | BroadcastGameState
+        -- for chat messages
+        | SendChat
+        -- for composing chat messages
+        | UpdateChatBox String
+        | NoOp -- should never be responded to
+        | RestartClient
+          
 {- Description of possible moves; used to serialize/deserialize moves between
    server and clients -}
 type PlayDesc = PlayCard CardId
@@ -379,6 +443,8 @@ type PlayDesc = PlayCard CardId
               | EndPhase
               | PromptResponse PromptOutput
 
+
+-- TODO: have a Related "event" type that is this plus a turn
 type alias MoveDesc = {playerId : PlayerId, play : PlayDesc}
 
 moveDescEncoder : MoveDesc -> Value
@@ -423,7 +489,10 @@ type ClientToServerMsg =
      -- TODO is GameId necessary
      -- takes GameId of game, and list of _all_ players in game
      | MasterLobbyPushCMsg GameId (List PlayerId)
-     -- Here, we need a message type for logging
+     -- log a move or send a chat
+     -- TODO something to prevent spoofing moves
+     | GameLogCMsg GameId LogEntry
+
 
 {- Serialization code -}
 clientToServerMsgEncoder : ClientToServerMsg -> Value
@@ -446,10 +515,15 @@ clientToServerMsgEncoder msg =
                           , ("gameId", Encode.string gid)
                           , ("gameState", gameStateEncoder gst) ]
 
-        MasterLobbyPushCMsg gid ps->
+        MasterLobbyPushCMsg gid ps ->
             Encode.object [ ("msgType", Encode.string "masterLobbyPush")
                           , ("gameId", Encode.string gid)
                           , ("players", Encode.list (List.map Encode.string ps))]
+
+        GameLogCMsg gid le ->
+            Encode.object [ ("msgType", Encode.string "gameLog")
+                          , ("gameId", Encode.string gid)
+                          , ("logEntry", logEntryEncoder le) ]
 
         QuitGameCMsg ->
             Encode.object [ ("msgType", Encode.string "quit") ]
@@ -471,11 +545,9 @@ type ServerToClientMsg = PlayerJoinedSMsg GameId (List PlayerId)
                        -- update lobby state with new player list
                        | UpdateLobbySMsg (List PlayerId)
                        | PlayerQuitSMsg -- TODO include more info?? maybe a player ID or something
-                       -- have a message type for log entries
+                       -- message for getting sent logged moves/chats
+                       | GameLogSMsg GameId LogEntry
                        | UnknownSMsg -- used in event of parse failure; eventually remove
-
-{- JSON decoder for game states -}
-{- special thanks to https://robots.thoughtbot.com/decoding-json-structures-with-elm -}
 
 -- transform the keys of a dict, specialized to String and Int
 -- NB this throws away bindings that fail to parse
@@ -518,8 +590,9 @@ shopEncoder : Dict.Dict CardId Int -> Value
 shopEncoder d =
     Encode.object <| List.map (\(k,v) -> (toString k, Encode.int v)) <| Dict.toList d 
 
--- this needs to change
--- WE need to wrap GameState
+{- JSON decoder for game states -}
+{- special thanks to https://robots.thoughtbot.com/decoding-json-structures-with-elm -}
+
 gameStateDecoder : Decoder GameState
 gameStateDecoder =
     (succeed makeGameState)
@@ -536,7 +609,7 @@ gameStateDecoder =
         |: ("phase" := gamePhaseDecoder)
         |: ("rng" := int)
         |: ("prompt" := gamePromptDecoder)
-        |: ("cont" := succeed Nothing) -- we can't serialize code, nor do we need to
+        |: (succeed Nothing) -- we can't serialize code, nor do we need to
 
 playersEncoder : Dict.Dict PlayerId PlayerState -> Value
 playersEncoder d =
@@ -606,6 +679,11 @@ serverToClientMsgDecoder =
                   "updateLobbyState" ->
                       object1 UpdateLobbySMsg
                           ("players" := list string)
+
+                  "gameLog" ->
+                      object2 GameLogSMsg
+                          ("gameId" := string)
+                          ("logEntry" := logEntryDecoder)
 
                   _ -> succeed UnknownSMsg
     

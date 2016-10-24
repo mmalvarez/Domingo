@@ -301,6 +301,73 @@ displayMasterOptions clcState =
                 , value (strOfMaybeInt clcState.rngInput)] []
         ]
 
+extractGameLog : ClientState -> List MoveDesc
+extractGameLog cs =
+    let log = case cs of
+                    ClientPlayMaster cpState -> cpState.gameLog
+                    ClientPlaySub cpState -> cpState.gameLog
+                    _ -> []
+    in List.concatMap (\le ->
+                           case le of
+                               LoggedMove md -> [md]
+                               _ -> []) log
+
+extractChatLog : ClientState -> List (PlayerId, String)
+extractChatLog cs =
+    let log = case cs of
+                  ClientPlayMaster cpState -> cpState.gameLog
+                  ClientPlaySub cpState -> cpState.gameLog
+                  _ -> []
+    in List.concatMap (\le ->
+                           case le of
+                               LoggedChatMessage p m -> [(p,m)]
+                               _ -> []) log
+
+-- display the log of chat messages
+displayChatDiv clientState =
+    let chats = extractChatLog clientState in
+    let newChat =
+            case clientState of
+                ClientPlayMaster cp -> cp.chatBox
+                ClientPlaySub cp -> cp.chatBox
+                _ -> Nothing
+    in
+    div [] <|
+        [h2 [] [text "Messages:"] ] ++
+        List.concatMap (\(p, m) ->
+            [text (p ++ ": " ++ m), br [] []]) chats ++
+        [ button [onClick SendChat] [text "Chat"]
+        , input [ onInput UpdateChatBox
+                , placeholder "type a message"
+                , value (strOfMaybe newChat)] []
+        ]
+
+displayMoveDesc md =
+    case md.play of
+        PlayCard cid ->
+            text (md.playerId ++ " played " ++ (unwrapCard (dflGet cid allCards urCard)).name)
+        BuyCard cid ->
+            text (md.playerId ++ " bought " ++ (unwrapCard (dflGet cid allCards urCard)).name)
+        EndPhase ->
+            text (md.playerId ++ " ended phase")
+        PromptResponse po ->
+            let selectText =
+                    case po of
+                        POBool b -> "(bool) " ++ toString b
+                        POInt i -> "(int)" ++ toString i
+                        POMaybeInt (Just i) ->
+                            "(maybe int) " ++ toString i
+                        POMaybeInt Nothing -> "nothing"
+                        POUnknown -> "unknown"
+            in text (md.playerId ++ " selected " ++ selectText)
+
+-- display the play log
+displayGameLogDiv clientState =
+    let moves = extractGameLog clientState in
+    div [] <|
+        [h2 [] [text "Game Log:"] ] ++
+        List.concatMap (\m -> [displayMoveDesc m, br [] []]) moves
+
 -- display the main div
 displayMainDiv clientState =
     case clientState of
@@ -376,10 +443,14 @@ displayClientOptions clientState =
 displayClientState clientState =
   let mainDiv = displayMainDiv clientState
       clientOptions =  displayClientOptions clientState
+      chatLogDiv = displayChatDiv clientState
+      gameLogDiv = displayGameLogDiv clientState
   in
   div []
     ([ mainDiv ] ++
       [ br [] [], br [] []] ++
+      [ gameLogDiv, br [] [], br [] []] ++
+      [ chatLogDiv, br [] [], br [] []] ++
       [ clientOptions ] ++
       [ br [] [], br [] []
       , text "Created By Ronald X Hackerino"])
