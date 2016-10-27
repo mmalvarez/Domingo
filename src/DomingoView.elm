@@ -301,47 +301,35 @@ displayMasterOptions clcState =
                 , value (strOfMaybeInt clcState.rngInput)] []
         ]
 
-extractGameLog : ClientState -> List MoveDesc
-extractGameLog cs =
-    let log = case cs of
-                    ClientPlayMaster cpState -> cpState.gameLog
-                    ClientPlaySub cpState -> cpState.gameLog
-                    _ -> []
-    in List.concatMap (\le ->
-                           case le of
-                               LoggedMove md -> [md]
-                               _ -> []) log
+extractGameLog : ClientPlayState -> List MoveDesc
+extractGameLog cs = List.concatMap (\le -> case le of
+                                               LoggedGameEvent (GameMove md) -> [md]
+                                               _ -> []) cs.gameLog
 
-extractChatLog : ClientState -> List (PlayerId, String)
-extractChatLog cs =
-    let log = case cs of
-                  ClientPlayMaster cpState -> cpState.gameLog
-                  ClientPlaySub cpState -> cpState.gameLog
-                  _ -> []
-    in List.concatMap (\le ->
-                           case le of
-                               LoggedChatMessage p m -> [(p,m)]
-                               _ -> []) log
-
+extractChatLog : ClientPlayState -> List (PlayerId, String)
+extractChatLog cs = List.concatMap (\le ->
+                                        case le of
+                                            LoggedChatMessage p m -> [(p,m)]
+                                            _ -> []) cs.gameLog
 -- display the log of chat messages
+displayChatDiv : ClientState -> Html Msg
 displayChatDiv clientState =
-    let chats = extractChatLog clientState in
-    let newChat =
-            case clientState of
-                ClientPlayMaster cp -> cp.chatBox
-                ClientPlaySub cp -> cp.chatBox
-                _ -> Nothing
-    in
-    div [] <|
-        [h2 [] [text "Messages:"] ] ++
-        List.concatMap (\(p, m) ->
-            [text (p ++ ": " ++ m), br [] []]) chats ++
-        [ button [onClick SendChat] [text "Chat"]
-        , input [ onInput UpdateChatBox
-                , placeholder "type a message"
-                , value (strOfMaybe newChat)] []
-        ]
-
+    case clientState of
+        ClientPlay cps ->
+            let chats = extractChatLog cps
+                newChat = cps.chatBox
+            in
+                div [] <|
+                    [h2 [] [text "Messages:"] ] ++
+                        List.concatMap (\(p, m) ->
+                            [text (p ++ ": " ++ m), br [] []]) chats ++
+                                [ button [onClick SendChat] [text "Chat"]
+                                , input [ onInput UpdateChatBox
+                                        , placeholder "type a message"
+                                        , value (strOfMaybe newChat)] []
+                        ]
+        _ -> div [] []
+                        
 displayMoveDesc md =
     case md.play of
         PlayCard cid ->
@@ -363,12 +351,16 @@ displayMoveDesc md =
 
 -- display the play log
 displayGameLogDiv clientState =
-    let moves = extractGameLog clientState in
-    div [] <|
-        [h2 [] [text "Game Log:"] ] ++
-        List.concatMap (\m -> [displayMoveDesc m, br [] []]) moves
+    case clientState of
+        ClientPlay cps ->
+            let moves = extractGameLog cps in
+            div [] <|
+                [h2 [] [text "Game Log:"] ] ++
+                    List.concatMap (\m -> [displayMoveDesc m, br [] []]) moves
+        _ -> div [] []
 
 -- display the main div
+displayMainDiv : ClientState -> Html Msg
 displayMainDiv clientState =
     case clientState of
         ClientPreGame cpgs ->
@@ -404,42 +396,21 @@ displayMainDiv clientState =
                      Just clc -> [displayMasterOptions clc]
                      Nothing -> [])
 
-        -- add a "whose turn"
-        ClientPlayMaster cpState ->
+        ClientPlay cpState ->
             displayGameState cpState.gameState cpState.localPlayerIds
   
-        ClientPlaySub cpState ->
-            -- TODO: if it's the turn of someone who's local,
-            -- show the buttons!
-            displayGameState cpState.gameState cpState.localPlayerIds
-
 {- Displays some options that affect the entire
    client and are displayed regardless of game state -}
+displayClientOptions : ClientState -> Html Msg
 displayClientOptions clientState =
-    let message =
-            case
-            (case clientState of
-                 ClientPreGame cpg -> cpg.message
-                 
-                 ClientPlayMaster cp -> cp.message
-
-                 ClientLobby cl -> cl.message
-                                                           
-                 ClientPlaySub cs -> cs.message
-            ) of
-                
-            Nothing -> "message:"
-            Just m -> "message: " ++ m
-    in
     div []
         [ button [ onClick RestartClient ] [text "restart client" ]
-        , br [] []
-        , text ("Most recent server message: " ++ message)
         , br [] []
         , button [ onClick ShowState ] [ text "show client state in console" ]
         -- TODO: eventually add a server maintenance button here? or somewhere
         ]
-            
+
+displayClientState : ClientState -> Html Msg        
 displayClientState clientState =
   let mainDiv = displayMainDiv clientState
       clientOptions =  displayClientOptions clientState

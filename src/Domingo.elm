@@ -31,7 +31,6 @@ startingClientState = ClientPreGame
   { gidInput = Nothing
   , newPidInput = Nothing
   , pidsInput = []
-  , message = Nothing
   }
 
 main =
@@ -59,9 +58,12 @@ updateAndPushMasterState cs le ogs =
         GameState gs ->
             let entryMsgs = List.map (GameLogCMsg gs.gameId) le in
             case cs of
-                ClientPlayMaster cp ->
-                    (ClientPlayMaster {cp | gameState = ogs}
-                    , pushMsgs ([MasterPushCMsg gs.gameId ogs] ++ entryMsgs))
+                ClientPlay cp ->
+                    -- only if we are master
+                    if cp.isMaster then
+                        (ClientPlay {cp | gameState = ogs}
+                        , pushMsgs ([MasterPushCMsg gs.gameId ogs] ++ entryMsgs))
+                    else (cs, Cmd.none)
                 _ -> (cs, Cmd.none)
 
 -- send an internal message
@@ -154,72 +156,52 @@ update msg state =
                                                 Nothing -> startState
                                                 Just seed -> {startState | rng = seed}
                         in
-                            (ClientPlayMaster { gameId = clst.gameId
-                                              , gameState = GameState startStateRng
-                                              , message = clst.message
-                                              , localPlayerIds = Set.fromList clst.localPlayerIds
-                                              , gameLog = []
-                                              , chatBox = Nothing
-                                              }
+                            (ClientPlay { gameId = clst.gameId
+                                        , isMaster = True
+                                        , gameState = GameState startStateRng
+                                        , localPlayerIds = Set.fromList clst.localPlayerIds
+                                        , gameLog = []
+                                        , chatBox = Nothing
+                                        }
                             , Random.generate FinishStartingGame (Random.int Random.minInt Random.maxInt))
                 
-{-                       
-    (SpectateGame, ClientPreGame cst) ->
-        case cst.gidInput of
-            Just gid ->
-                let output =
-                        succeed <| Encode.encode 0 <|
-                            clientToServerMsgEncoder <|
-                                SpectateGameCMsg gid
-                in
-                ( ClientSpectate { gameId = gid
-                                         , gameState = Nothing
-                                         , message = cst.message }
-                , Task.perform (\x -> NoOp) SendToServer output
-                )
-            Nothing -> (state, Cmd.none)
--}
-
-    {- TODO: let server/other clients know we quit? -}
     (RestartClient, _) ->
         (startingClientState, pushMsg QuitGameCMsg) -- send a message to the server
 
     {- Checks to see if the RNG default value (bogus value) has not been
        clobbered yet. If it is still default we use the random one we just generated -}
     {- I am concerned with how this interacts with logging -}
-    (FinishStartingGame newRng, ClientPlayMaster cp) ->
-        let cp' =
-                if (getGameState cp.gameState).rng == rngBogusValue
-                then
-                    {cp | gameState =
-                         let cpGs = getGameState cp.gameState in
-                         GameState {cpGs | rng = newRng}}
-                else
-                    cp
-        in
-            cp' |> (\cp -> cp.gameState)
-                |> initialDeal |> updateAndPushMasterState state []
+    (FinishStartingGame newRng, ClientPlay cp) ->
+        if cp.isMaster then
+            let cp' =
+                    if (getGameState cp.gameState).rng == rngBogusValue
+                    then
+                        {cp | gameState =
+                             let cpGs = getGameState cp.gameState in
+                             GameState {cpGs | rng = newRng}}
+                    else
+                        cp
+            in
+                cp' |> (\cp -> cp.gameState)
+                    |> initialDeal |> updateAndPushMasterState state []
+        else (state, Cmd.none)
 
-    -- if we are master, do the move locally, and then push update
-    (SubmitMove pd, ClientPlayMaster cp) ->
-        -- use tasks here
+
+    (SubmitMove pd, ClientPlay cp) ->
         let currentPlayer = dflHead (getGameState cp.gameState).playerOrder dummyId in
-        (ClientPlayMaster cp, sendInternalMsg (DoMove {play = pd, playerId = currentPlayer}))
-
-    -- if not we push our move to the server
-    (SubmitMove pd, ClientPlaySub cps) ->
-        -- if we don't have a game state (from server) yet, do nothing
-        -- (we could also keep track of players locally, but unnecessary i think)
-        -- TODO if we're not careful on the server side this allows forgery of moves
-        
-        let
-            currentPlayer = dflHead (getGameState cps.gameState).playerOrder dummyId
-        in
-        (ClientPlaySub cps, pushMsg (MakeMoveCMsg cps.gameId {play = pd, playerId = currentPlayer}))
+        if cp.isMaster
+        then
+            -- if we are master, do the move locally, and then push update
+            -- TODO do something to block forgery
+            (ClientPlay cp, sendInternalMsg (DoMove {play = pd, playerId = currentPlayer}))
+        else
+            -- if not we push our move to the server
+            (ClientPlay cp, pushMsg (MakeMoveCMsg cp.gameId {play = pd, playerId = currentPlayer}))
 
     -- this runs on master, and is used to actually do the move
     -- it will send 2 messages: masterPush and a gameLog for the move
-    (DoMove md, ClientPlayMaster cp) ->
+    (DoMove md, ClientPlay cp) ->
+        if cp.isMaster then
         case md.play of
             -- TODO we need to check if the card ID is actually in their hand
             PlayCard cId ->
@@ -248,8 +230,8 @@ update msg state =
                                                           update' pId (\p -> {p | hand = newHand })
                                                               gst.players
                                                  }
-                                             ls = [LoggedMove { playerId = pId
-                                                              , play = PlayCard card.idn}]
+                                             ls = [LoggedGameEvent (GameMove { playerId = pId
+                                                                             , play = PlayCard card.idn})]
                                                  
                                          in GameState gst' |> eff |> card.afterPlayEffect |> updateAndPushMasterState state ls
                       
@@ -264,8 +246,8 @@ update msg state =
                                             , players = update' pId (\p -> {p | hand = newHand})
                                                         gst.players
                                             }
-                                    ls = [LoggedMove { playerId = pId
-                                                     , play = PlayCard card.idn }]
+                                    ls = [LoggedGameEvent (GameMove { playerId = pId
+                                                                    , play = PlayCard card.idn })]
                      
                                 in GameState gst' |> card.afterPlayEffect |> updateAndPushMasterState state ls
 
@@ -291,8 +273,8 @@ update msg state =
                                         , coin = gst.coin - card.cost
                                         , shop = update' cId (\i -> i - 1) gst.shop
                                         }
-                                    ls = [LoggedMove {playerId = pId
-                                                     , play = BuyCard card.idn}]
+                                    ls = [LoggedGameEvent (GameMove {playerId = pId
+                                                                    , play = BuyCard card.idn})]
                                 in
                                     if gameOver (GameState gst')
                                     then
@@ -321,8 +303,8 @@ update msg state =
                     gst = getGameState ogst
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
-                    ls = [LoggedMove {playerId = pId
-                                     ,play = EndPhase}]
+                    ls = [LoggedGameEvent (GameMove {playerId = pId
+                                                    ,play = EndPhase})]
                 in
                     -- make sure there is no prompt
                     if gst.prompt == Nothing then
@@ -355,8 +337,8 @@ update msg state =
                     -- TODO don't need all of these
                     pId = dflHead gst.playerOrder dummyId
                     player = dflGet pId gst.players dummy
-                    ls = [LoggedMove {playerId = pId
-                                     , play = PromptResponse po}]
+                    ls = [LoggedGameEvent (GameMove {playerId = pId
+                                                    , play = PromptResponse po})]
                 in
                     -- need to distinguish between noop and ill typed input
                     case (gst.prompt, gst.cont) of
@@ -367,21 +349,14 @@ update msg state =
                         -- no prompt? then ignore
                         (_, _) -> (state, Cmd.none)
 
+        else (state, Cmd.none)
+
     -- chat handling
     (SendChat, _) ->
-        -- TODO: should we wait to clear box until server responds
         case state of
-            ClientPlayMaster cp ->
+            ClientPlay cp ->
                 case cp.chatBox of
-                    Just m -> (ClientPlayMaster {cp | chatBox = Nothing}
-                              , pushMsg (GameLogCMsg cp.gameId
-                                             (LoggedChatMessage (dflHead (unwrapGameState cp.gameState).playerOrder dummyId) m)))
-
-                    Nothing -> (state, Cmd.none)
-
-            ClientPlaySub cp ->
-                case cp.chatBox of
-                    Just m -> (ClientPlaySub {cp | chatBox = Nothing}
+                    Just m -> (ClientPlay {cp | chatBox = Nothing}
                               , pushMsg (GameLogCMsg cp.gameId
                                              (LoggedChatMessage (dflHead (unwrapGameState cp.gameState).playerOrder dummyId) m)))
                     Nothing -> (state, Cmd.none)
@@ -390,11 +365,8 @@ update msg state =
 
     (UpdateChatBox s, _) ->
         case state of
-            ClientPlayMaster cp ->
-                     (ClientPlayMaster {cp | chatBox = Just s}, Cmd.none)
-
-            ClientPlaySub cp ->
-                     (ClientPlaySub {cp | chatBox = Just s}, Cmd.none)
+            ClientPlay cp ->
+                     (ClientPlay {cp | chatBox = Just s}, Cmd.none)
 
             _ -> (state, Cmd.none)
                                 
@@ -423,7 +395,7 @@ update msg state =
                             _ -> (state, Cmd.none)
                                         
                     
-                    UpdateGameStateSMsg gi gs msg ->
+                    UpdateGameStateSMsg gi gs ->
                         case (Debug.log "updating game state" state) of
                             ClientLobby cls ->
                                 -- lobby means the game just started
@@ -431,12 +403,12 @@ update msg state =
                                     Nothing ->
                                         -- make sure the ID is correct
                                         if cls.gameId == (getGameState gs).gameId
-                                        then (ClientPlaySub { gameId = cls.gameId
-                                                            , gameState = gs
-                                                            , message = Just msg
-                                                            , localPlayerIds = Set.fromList cls.localPlayerIds
-                                                            , gameLog = []
-                                                            , chatBox = Nothing}
+                                        then (ClientPlay { gameId = cls.gameId
+                                                         , isMaster = False
+                                                         , gameState = gs
+                                                         , localPlayerIds = Set.fromList cls.localPlayerIds
+                                                         , gameLog = []
+                                                         , chatBox = Nothing}
                                              , Cmd.none)
                                         else (state, Cmd.none)
 
@@ -444,30 +416,34 @@ update msg state =
                                     Just mcs ->
                                         (state, Cmd.none)
                                             
-                            ClientPlaySub cps ->
-                                let newGameState =
+                            ClientPlay cps ->
+                                if not cps.isMaster
+                                then
+                                    let newGameState =
                                         -- check to make sure the game ID is correct
-                                        if cps.gameId == (getGameState gs).gameId
-                                        then gs
-                                        else cps.gameState
-                                in
-                                (ClientPlaySub {cps | gameState = newGameState
-                                                     , message = Just msg
-                                               }, Cmd.none)
+                                            if cps.gameId == (getGameState gs).gameId
+                                            then gs
+                                            else cps.gameState
+                                    in
+                                        (ClientPlay {cps | gameState = newGameState
+                                                    }, Cmd.none)
+                                else (state, Cmd.none)
 
-                            ClientPreGame cpgs -> (ClientPreGame {cpgs | message = Just msg}, Cmd.none)
-                            ClientPlayMaster cpm -> (ClientPlayMaster {cpm | message = Just msg}, Cmd.none)
+                            _ -> (state, Cmd.none)
 
                     -- if we are master and a player made a move
                     MadeMoveSMsg gi md ->
                         case state of
                             -- TODO: check for game ID consistency?
-                            ClientPlayMaster cpms ->
-                                -- make sure it is that player's turn
-                                -- TODO: do somthing to prevent spoofing
-                                if List.head (getGameState cpms.gameState).playerOrder == Just md.playerId
-                                then (state, sendInternalMsg (DoMove md))
-                                else (state, Debug.log "WRONG PLAYER" Cmd.none)
+                            ClientPlay cps ->
+                                if cps.isMaster
+                                then
+                                    -- make sure it is that player's turn
+                                    -- TODO: do somthing to prevent spoofing
+                                    if List.head (getGameState cps.gameState).playerOrder == Just md.playerId
+                                    then (state, sendInternalMsg (DoMove md))
+                                    else (state, Debug.log "WRONG PLAYER" Cmd.none)
+                                else (state, Cmd.none)
 
                             _ -> (state, Cmd.none)
 
@@ -503,7 +479,6 @@ update msg state =
                                                 , masterConfigState = Nothing
                                                 , serverResponded = True
                                                 , localPlayerIds = allPidsInput
-                                                , message = cpst.message
                                                 }
                                         in
                                             case lobbyResp of
@@ -513,8 +488,7 @@ update msg state =
                                                 LobbyClient ->
                                                     (ClientLobby clst, Cmd.none)
                                                 LobbyFail ->
-                                                    (ClientPreGame
-                                                         {cpst | message = Just "unable to join"}, Cmd.none)
+                                                    (state, Cmd.none)
                                     -- we need a game ID
                                     Nothing -> (state, Cmd.none)
                             _ -> (state, Cmd.none)
@@ -522,11 +496,8 @@ update msg state =
                     GameLogSMsg gid le ->
                         -- just add the new message to the log
                         case state of
-                            ClientPlaySub cps ->
-                                (ClientPlaySub {cps | gameLog = cps.gameLog ++ [le]}, Cmd.none)
-
-                            ClientPlayMaster cpm ->
-                                (ClientPlayMaster {cpm | gameLog = cpm.gameLog ++ [le]}, Cmd.none)
+                            ClientPlay cps ->
+                                (ClientPlay {cps | gameLog = cps.gameLog ++ [le]}, Cmd.none)
 
                             _ -> (state, Cmd.none)
                                  

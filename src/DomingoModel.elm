@@ -299,7 +299,7 @@ type alias ClientPreGameState =
   { gidInput : Maybe GameId
   , newPidInput : Maybe PlayerId
   , pidsInput : List PlayerId -- List to support multiplayer on same client. If empty we are a spectator
-  , message : Maybe String }
+  }
 
     -- describe what type of lobby this is (play or spectate)
 type LobbyType = LobbyPlay
@@ -326,16 +326,15 @@ type alias ClientLobbyState =
     , serverResponded : Bool
     -- what players (incl master) there are.
     , playerIds : List PlayerId
-    , message : Maybe String
     }
 
 type alias ClientPlayState =
   { gameId : GameId
+  , isMaster : Bool
   , localPlayerIds : Set.Set PlayerId -- keep track of whose turns should be taken on this machine
   , gameState : GameState {- game state should have .gameId == gId -}
   , gameLog : List LogEntry -- messages describing all plays so far, plus other stuff (e.g. chat)
   , chatBox : Maybe String
-  , message : Maybe String
   }
 
 -- events in the game. e.g. game start, game end
@@ -343,7 +342,8 @@ type alias ClientPlayState =
 type GameEvent =
       GameStart Int -- this is the RNG value used to start the game. maybe we don't want it.
     | GameEnd
-    -- TurnStart (turnNum, playerId). TODO we need to add turn number to game.
+    | GameTurnStart Int PlayerId
+    | GameMove MoveDesc
 
 gameEventEncoder : GameEvent -> Value
 gameEventEncoder ge =
@@ -351,18 +351,24 @@ gameEventEncoder ge =
         GameStart rng -> Encode.object [("eventType", Encode.string "gameStart")
                                        ,("rng", Encode.int rng)]
         GameEnd -> Encode.object [("eventType", Encode.string "gameEnd")]
-
+        GameTurnStart i pid -> Encode.object [("eventType", Encode.string "gameTurnStart")
+                                             ,("turn", Encode.int i)
+                                             ,("playerId", Encode.string pid)]
+        GameMove md -> Encode.object [("eventType", Encode.string "gameMove")
+                                       ,("move", moveDescEncoder md)]
+                               
 gameEventDecoder : Decoder GameEvent
 gameEventDecoder =
     ("eventType" := string) `andThen` \eventType ->
         case eventType of
             "gameStart" -> object1 GameStart ("rng" := int)
             "gameEnd" -> succeed GameEnd
+            "gameTurnStart" -> object2 GameTurnStart ("turn" := int) ("playerId" := string)
+            "gameMove" -> object1 GameMove ("move" := moveDescDecoder)
             _ -> fail "invalid game event"
 
 -- type for entries that go in the game log.
 type LogEntry = LoggedChatMessage PlayerId String
-              | LoggedMove MoveDesc
               | LoggedGameEvent GameEvent
 
 logEntryEncoder : LogEntry -> Value
@@ -371,9 +377,6 @@ logEntryEncoder le =
         LoggedChatMessage pid m -> Encode.object [("entryType", Encode.string "loggedChat")
                                                     ,("playerId", Encode.string pid)
                                                     ,("message", Encode.string m)]
-
-        LoggedMove md -> Encode.object [("entryType", Encode.string "loggedMove")
-                                       ,("move", moveDescEncoder md)]
 
         LoggedGameEvent ge -> Encode.object [("entryType", Encode.string "loggedGameEvent")
                                             ,("event", gameEventEncoder ge)]
@@ -388,8 +391,6 @@ logEntryDecoder =
                 object2
                     LoggedChatMessage
                     ("playerId" := string) ("message" := string)
-            "loggedMove" ->
-                object1 LoggedMove ("move" := moveDescDecoder)
 
             "loggedGameEvent" ->
                 object1 LoggedGameEvent ("event" := gameEventDecoder)
@@ -400,8 +401,7 @@ logEntryDecoder =
 type ClientState =
        ClientPreGame ClientPreGameState
      | ClientLobby ClientLobbyState
-     | ClientPlayMaster ClientPlayState
-     | ClientPlaySub ClientPlayState
+     | ClientPlay ClientPlayState
 
 type Msg =
         {- communications -}
@@ -537,7 +537,7 @@ type ServerLobbyResponse = LobbyMaster -- if you are the first one in (hence, ma
 {- Responses from server -}
 type ServerToClientMsg = PlayerJoinedSMsg GameId (List PlayerId)
                        | MadeMoveSMsg GameId MoveDesc -- used to inform master of another user's move
-                       | UpdateGameStateSMsg GameId GameState String -- receive master's pushed game state
+                       | UpdateGameStateSMsg GameId GameState -- receive master's pushed game state
                        -- lets the client know they were the first one in and
                        -- thus are the "master"
                        -- server responses to attempts to join lobby
@@ -653,17 +653,15 @@ serverToClientMsgDecoder =
     -- check based on type, to see what you need
     ("msgType" := string) `andThen`
         \s -> case s of
-                      
                   "madeMove" ->
                       object2 MadeMoveSMsg
                           ("gameId" := string)
                           ("move" := moveDescDecoder)
                   
                   "updateGameState" ->
-                      object3 UpdateGameStateSMsg
+                      object2 UpdateGameStateSMsg
                           ("gameId" := string)
                           ("gameState" := gameStateDecoder)
-                          ("message" := string)
 
                   "playerJoined" ->
                       object2 PlayerJoinedSMsg
